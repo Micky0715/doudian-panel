@@ -1,0 +1,20 @@
+[
+  {"title":"Redmi Turbo 3 二手手机","expect_brand":"Redmi/红米","expect_model":"Turbo 3","categories":[1]},
+  {"title":"红米 Note 17 Pro 二手手机","expect_brand":"Redmi/红米","expect_model":"Note 17 Pro","categories":[1,4]},
+  {"title":"Redmi K70 (至尊版) 二手手机","expect_brand":"Redmi/红米","expect_model":"K70至尊","categories":[1,4]},
+  {"title":"REDMI K80 Pro 二手手机","expect_brand":"Redmi/红米","expect_model":"K80 Pro","categories":[1,4]},
+  {"title":"小米 15 二手手机","expect_brand":"Xiaomi/小米","expect_model":"15","categories":[1,7]},
+  {"title":"华为 Pura X 二手手机","expect_brand":"Huawei/华为","expect_model":"HUAWEI Pura X","categories":[3,4]},
+  {"title":"HUAWEI Pura X 二手手机","expect_brand":"Huawei/华为","expect_model":"HUAWEI Pura X","categories":[3,4]},
+  {"title":"华为 Mate 60 RS 非凡大师 二手手机","expect_brand":"Huawei/华为","expect_model":"Mate 60 RS 非凡大师","categories":[3,4]},
+  {"title":"华为 Mate X5 二手手机","expect_brand":"Huawei/华为","expect_model":"Mate X5","categories":[3,4]},
+  {"title":"华为 Mate 70 Pro+ 二手手机","expect_brand":"Huawei/华为","expect_model":"HUAWEI Mate 70 Pro+","categories":[3,4]},
+  {"title":"荣耀 Magic8 Pro Air 二手手机","expect_brand":"Honor/荣耀","expect_model":"Magic8 Pro Air","categories":[4]},
+  {"title":"OPPO Find X9 二手手机","expect_brand":"OPPO/OPPO","expect_model":"Find X9","categories":[4]},
+  {"title":"OPPO Find X9 Pro 二手手机","expect_brand":"OPPO/OPPO","expect_model":"Find X9 Pro","categories":[4]},
+  {"title":"OPPO Reno15c 二手手机","expect_brand":"OPPO/OPPO","expect_model":"Reno15c","categories":[4]},
+  {"title":"iQOO Neo9 二手手机","expect_brand":"iQOO/iQOO","expect_model":"Neo9","categories":[4]},
+  {"title":"一加 15 二手手机","expect_brand":"OnePlus/一加","expect_model":"15","categories":[7]},
+  {"title":"Redmi Note 14 二手手机","expect_brand":"Redmi/红米","expect_model":"Note 14 5G","categories":[1,4]},
+  {"title":"华为 nova 14 活力版 二手手机","expect_brand":"Huawei/华为","expect_model":"HUAWEI nova 14 (活力版)","categories":[3,4]}
+]

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="拍拍盖亚">
+  <rect width="64" height="64" rx="14" fill="#00bf17"/>
+  <path fill="#fff" d="M10 20.5 27 9v12.2l-7.3 5v22.2L10 42V20.5Z"/>
+  <path fill="#fff" d="m30.2 7.2 7.6 5.1v39.4l-7.6 5.1V7.2Z"/>
+  <path fill="#fff" d="m41 14.5 13 8.7v17.6l-13 8.7V37.3l5.2-3.5v-4.1L41 26.2V14.5Z"/>
+</svg>

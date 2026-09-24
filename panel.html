@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>爱回收 · 智能运营平台</title>
+  <link rel="preload" as="image" href="/assets/character/character-idle-forward.webp?v=20260911-eye4" type="image/webp">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/assets/panel.css?v=20260924-clean-panel-1">
+</head>
+<body>
+<div class="wrap">
+
+  <!-- 顶栏 -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 64 64" role="presentation" focusable="false">
+          <path fill-rule="evenodd" d="M8 17 21 7l11 8 11-8 13 10v29L32 63 8 46V17Zm10 6 4-3 10 7 10-7 4 3v18L32 51 18 41V23Z"/>
+        </svg>
+      </div>
+      <h1>爱回收 · 智能运营平台</h1>
+    </div>
+    <div class="spacer"></div>
+    <div class="topbar-right">
+      <span class="conn" aria-label="系统连接状态"><i class="dot" id="dot"></i><span id="connTxt">连接中</span></span>
+      <button class="topbar-error-link" id="allErrBtn" type="button">查看所有报错 <span class="ae-count">0</span></button>
+    </div>
+  </header>
+
+  <!-- 首页视觉交互预览：不接入新的业务接口，现有功能绑定保持不变 -->
+  <section class="ops-stage" id="opsStage" aria-labelledby="opsStageTitle">
+    <header class="ops-copy">
+      <span class="mascot-kicker"><i></i> AI RECYCLE OPS</span>
+      <h2 id="opsStageTitle">把每一次上新，稳稳接住</h2>
+      <p>从素材准备到商品发布，一处查看，一键接续。</p>
+    </header>
+
+    <div class="ops-orbit">
+      <nav class="ops-rail ops-rail-left" aria-label="盖亚铺货入口">
+        <button class="ops-launch" type="button" data-view-target="gaia">
+          <span class="ops-launch-copy"><b>盖亚铺货</b><small>填写型号，自动匹配并上传</small></span><span class="ops-launch-arrow" aria-hidden="true">→</span>
+        </button>
+      </nav>
+
+      <div class="mascot-stage" aria-label="Mikey 人物互动舞台">
+        <figure class="mascot-figure" id="mascotFigure" aria-label="爱回收运营助手">
+          <div class="mascot-greeting-note" id="mascotGreetingNote" role="status" aria-live="polite">工作顺利，祝你拥有美好的一天！✨</div>
+          <span class="mascot-ground-shadow" aria-hidden="true"></span>
+          <div class="mascot-art" id="mascotArt" data-character-state="idle">
+            <img class="character-layer forward-layer" id="characterForwardLayer" src="/assets/character/character-idle-forward.webp?v=20260911-eye4" fetchpriority="high" decoding="sync" alt="身着万物新生标识黄外套、手捧印有爱回收标识纸盒的运营助手">
+            <img class="character-layer idle-layer" id="characterIdleLayer" src="/assets/character/character-idle-eye-base.webp?v=20260911-eye4" decoding="async" alt="">
+            <svg class="character-eye-clip-defs" aria-hidden="true" width="0" height="0" focusable="false">
+              <defs>
+                <clipPath id="characterLeftEyeClip" clipPathUnits="objectBoundingBox">
+                  <path d="M .50 .03 C .27 .05 .10 .24 .05 .50 C .06 .75 .25 .94 .53 .97 C .79 .89 .94 .68 .95 .42 C .83 .17 .65 .05 .50 .03 Z"></path>
+                </clipPath>
+                <clipPath id="characterRightEyeClip" clipPathUnits="objectBoundingBox">
+                  <path d="M .49 .07 C .28 .09 .14 .28 .10 .52 C .12 .74 .30 .89 .54 .91 C .76 .82 .89 .63 .90 .41 C .80 .20 .64 .09 .49 .07 Z"></path>
+                </clipPath>
+              </defs>
+            </svg>
+            <span class="character-eye-mask eye-mask-left" id="characterLeftEyeMask" data-iris-width="21" data-iris-height="26" data-nose-direction="1" aria-hidden="true">
+              <img class="character-iris" id="characterLeftIris" src="/assets/character/left-iris.webp?v=20260911-eye4" alt="">
+            </span>
+            <span class="character-eye-mask eye-mask-right" id="characterRightEyeMask" data-iris-width="19" data-iris-height="26" data-nose-direction="-1" data-down-inset="1.5" aria-hidden="true">
+              <img class="character-iris" id="characterRightIris" src="/assets/character/right-iris.webp?v=20260911-eye4" alt="">
+            </span>
+            <video class="character-layer box-layer" id="characterBoxLayer" muted playsinline preload="auto" aria-hidden="true">
+              <source src="/assets/character/character-box-open-transparent.webm" type="video/webm">
+            </video>
+            <video class="character-layer full-action-layer" id="characterFullActionLayer" muted playsinline preload="auto" aria-hidden="true">
+              <source src="/assets/character/character-full-action-transparent.webm" type="video/webm">
+            </video>
+            <button class="mascot-greet-hotspot" id="mascotGreetHotspot" type="button" aria-label="和 Mikey 打招呼"></button>
+            <button class="mascot-box-hotspot" id="mascotBoxHotspot" type="button" aria-label="打开爱回收纸盒查看数码产品" aria-pressed="false"></button>
+          </div>
+        </figure>
+      </div>
+
+      <nav class="ops-rail ops-rail-right" aria-label="抖店上架入口">
+        <button class="ops-launch" type="button" data-view-target="doudian" data-scroll-target="doudianView" data-engine="api_media">
+          <span class="ops-launch-copy"><b>抖店上架</b><small>选择店铺，批量处理草稿</small></span><span class="ops-launch-arrow" aria-hidden="true">→</span>
+        </button>
+      </nav>
+    </div>
+
+    <div class="ops-statusline" aria-label="系统状态">
+      <span id="slotBadge">并行 0 / 4</span><i aria-hidden="true"></i><span>更多店铺自动排队</span>
+    </div>
+  </section>
+
+  <!-- 业务导航：各功能保持独立边界，避免继续堆叠在同一个控制区 -->
+  <nav class="workspace-nav" aria-label="业务功能">
+    <button class="workspace-tab active" data-view="gaia" type="button">
+      <span class="workspace-tab-logo workspace-tab-logo-gaia"><img src="/assets/gaia-logo.svg" alt="" aria-hidden="true"></span>
+      <span><b>盖亚铺货</b><small>Excel 生成与上传</small></span>
+    </button>
+    <button class="workspace-tab" data-view="doudian" type="button">
+      <span class="workspace-tab-logo workspace-tab-logo-doudian"><img src="/assets/doudian-logo.png" alt="" aria-hidden="true"></span>
+      <span><b>抖店上架</b><small>草稿处理与发布</small></span>
+    </button>
+  </nav>
+
+  <!-- 盖亚铺货：一个启动入口；匹配、填表、浏览器提交仍独立校验。 -->
+  <main class="workspace-view active" id="gaiaView" data-view-panel="gaia">
+      <section class="workflow-card gaia-quick-start">
+      <fieldset id="gaiaFormFields" class="gaia-form-fields">
+        <div class="section-heading">
+          <div><h3>盖亚铺货</h3><p class="card-intro">填好信息，点击开始。系统自动匹配型号、填写表格并上传盖亚。</p></div>
+          <span class="status-chip neutral" id="gaiaGenerationStatus">待填写</span>
+        </div>
+        <div class="gaia-basic-fields">
+          <label class="field"><span class="field-label">目标店铺</span><select id="gaiaShop" required><option value="">请选择目标店铺</option></select></label>
+          <label class="field"><span class="field-label">场域</span><select id="gaiaScene"><option value="2">直播货架</option><option value="1">直播间</option></select></label>
+          <label class="field"><span class="field-label">成色</span><select id="gaiaCondition" required><option value="">请选择成色</option><option value="99新">99新</option><option value="95新">95新</option></select></label>
+          <label class="field gaia-model-field"><span class="field-label">手机型号 <small>每行一个，建议带上品牌</small></span><textarea id="gaiaModels" rows="4" placeholder="苹果,iPhone 17 Pro&#10;OPPO,Find X8&#10;小米,Redmi K80"></textarea></label>
+        </div>
+      </fieldset>
+        <div class="gaia-run-row">
+          <button class="btn btn-primary gaia-start-btn" id="gaiaStartBtn" type="button" disabled>开始执行</button>
+          <button class="btn" id="gaiaStopBtn" type="button" disabled aria-describedby="gaiaStopHint" title="提交前停止；已提交盖亚的任务不能撤回">停止任务</button>
+          <span>会真实上传并提交到所选盖亚店铺；不会启动抖店发布。</span>
+        </div>
+        <p id="gaiaStopHint" class="gaia-stop-hint" role="status" aria-live="polite">任务开始后可在提交前停止；已提交盖亚的任务无法撤回。</p>
+        <div id="gaiaUploadStatus" class="gaia-run-status" role="status" aria-live="polite">模板和映射表自动读取，无需手动匹配或填 ID。盖亚要求登录时，请在弹出的窗口登录。</div>
+        <details class="gaia-details gaia-run-details" id="gaiaResultDetails">
+          <summary><span>匹配结果与执行明细</span><i>⌄</i></summary>
+          <div class="inspect-summary gaia-model-match-result" id="gaiaModelMatchResult">填写型号后，点击开始自动匹配。</div>
+          <div id="gaiaGeneratedPreview" class="inspect-summary">尚未生成文件。</div>
+          <a id="gaiaDownloadFile" class="btn" hidden>下载已校验的盖亚文件</a>
+        </details>
+      </section>
+
+    <fieldset id="gaiaAdvancedFields" class="gaia-form-fields">
+      <details class="workflow-card gaia-details gaia-advanced" id="gaiaAdvanced">
+        <summary><span>高级设置 <small>更换映射表、查看规则或分步排查；日常操作无需展开</small></span><i>⌄</i></summary>
+        <div class="gaia-grid">
+          <section class="gaia-advanced-section">
+            <div class="section-heading"><h3>发品模板</h3><span class="status-chip neutral" id="gaiaSourceStatus">自动读取</span></div>
+            <button class="btn" id="gaiaChooseFile" type="button">检查最新模板</button>
+            <div class="selected-file" id="gaiaSelectedFile">开始时自动选择最新有效模板</div>
+            <div class="inspect-summary" id="gaiaInspectSummary">只生成并上传副本，不修改原模板。</div>
+          </section>
+          <section class="gaia-advanced-section">
+            <div class="section-heading"><h3>型号映射表</h3><span class="status-chip neutral" id="gaiaMappingStatus">自动读取</span></div>
+            <p class="card-intro">使用直播货架货品价格规则数据，只保留明确标注“国行”的标品。同型号的容量、颜色 ID 全部保留并去重。</p>
+            <input type="file" id="gaiaMappingFile" accept=".xlsx,.csv" hidden>
+            <div class="workflow-actions">
+              <button class="btn" id="gaiaLoadDownloadedMapping" type="button">读取下载目录匹配表</button>
+              <button class="btn" id="gaiaChooseMappingFile" type="button">更换映射表</button>
+              <button class="btn" id="gaiaUploadMappingBtn" type="button" disabled>单独上传校验</button>
+            </div>
+            <div class="selected-file" id="gaiaSelectedMappingFile">自动读取下载目录；不可读取时使用已校验的保存版本，并显示来源。</div>
+          </section>
+        </div>
+        <div class="form-stack">
+          <label class="field"><span class="field-label">匹配到的标品 ID</span><textarea id="gaiaSkuIds" rows="3" readonly placeholder="自动匹配后回填，无需手动输入"></textarea></label>
+          <label class="field"><span class="field-label">每行数量</span><input type="number" id="gaiaCreateCount" value="1" min="1" max="1" readonly></label>
+        </div>
+        <p class="gaia-param-note">固定规则：聚合标识 A · 质检链接 1 · 数量 1 · 手机选品策略 D且E且G · 商品规则前缀 a。盖亚成色编码：99新填99，95新填95；型号不明确或校验失败时停止，不猜选。</p>
+        <div class="workflow-actions">
+          <button class="btn" id="gaiaResolveModelsBtn" type="button">仅匹配型号</button>
+          <button class="btn" id="gaiaPreviewBtn" type="button" disabled>仅预览</button>
+          <button class="btn" id="gaiaParseBtn" type="button" disabled>仅生成文件</button>
+          <button class="btn" id="gaiaHandoffCheckBtn" type="button" disabled>检查上传条件</button>
+          <button class="btn" id="gaiaSubmitBtn" type="button" disabled>上传已生成文件</button>
+          <button class="btn" id="gaiaCancelBatchBtn" type="button" hidden disabled>取消未提交批次</button>
+        </div>
+      </details>
+    </fieldset>
+  </main>
+
+  <main class="workspace-view" id="doudianView" data-view-panel="doudian">
+
+  <!-- 控制区 -->
+  <section class="control">
+    <div class="section-heading">
+      <div><h3>抖店上架</h3><p class="card-intro">选择店铺和模式，启动后在下方查看进度。</p></div>
+    </div>
+    <div class="control-grid">
+      <label class="field">
+        <span class="field-label">店铺</span>
+        <select id="shopSel"><option value="">（不切换，使用当前登录店铺）</option></select>
+      </label>
+      <label class="field">
+        <span class="field-label">模式</span>
+        <div class="segment" id="modeSeg">
+          <button type="button" class="seg active" data-mode="test">测试</button>
+          <button type="button" class="seg" data-mode="batch">批量</button>
+        </div>
+      </label>
+      <label class="field" id="nWrap">
+        <span class="field-label">数量</span>
+        <input type="number" id="testN" value="1" min="1" max="999">
+      </label>
+    </div>
+    <div class="run-actions">
+      <label class="save-draft-option">
+        <input type="checkbox" id="saveOnly" checked><span>仅保存草稿，不发布</span>
+      </label>
+      <div class="control-run">
+        <button class="btn btn-primary" id="runBtn" type="button">开始运行</button>
+      </div>
+    </div>
+    <details class="run-options" id="doudianAdvanced">
+      <summary><span>高级设置</span><small>执行链路、指定商品</small><i>⌄</i></summary>
+      <div class="control-grid compact-control-grid">
+        <label class="field">
+          <span class="field-label">执行链路</span>
+          <select id="engineSel">
+            <option value="api_media">API 素材发布（逐件回读，支持全量批量）</option>
+            <option value="browser">浏览器自动化（备用）</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">分级发布</span>
+          <select id="releaseStage">
+            <option value="" selected>按上方填写数量</option>
+            <option value="smoke">小范围验证 · 10 件</option>
+            <option value="pilot">扩大验证 · 20 件</option>
+            <option value="full">全量（仅验证通过后）</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="field-label">指定商品 ID（可选）</span>
+          <input type="text" id="productId" inputmode="numeric" placeholder="单商品安全测试">
+        </label>
+        <div class="field advanced-test-action">
+          <span class="field-label">单件验证</span>
+          <button class="btn btn-info" id="smartRunBtn" type="button">一键安全测试 1 件</button>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <p class="run-help">最多 4 家店同时运行，超出自动排队。停止后会完成当前商品并保存，再安全退出。</p>
+
+  <!-- 任务区（按状态分组） -->
+  <div class="task-groups" id="taskGroups">
+    <section class="task-group" data-group="queued">
+      <div class="tg-head"><h3>等待队列</h3><span class="tg-count" id="cnt-queued">0</span></div>
+      <div class="tasks" id="g-queued"></div>
+    </section>
+    <section class="task-group" data-group="running">
+      <div class="tg-head"><h3>进行中</h3><span class="tg-count" id="cnt-running">0</span></div>
+      <div class="tasks" id="g-running"></div>
+    </section>
+    <section class="task-group" data-group="done">
+      <div class="tg-head"><h3>已完成</h3><span class="tg-count" id="cnt-done">0</span></div>
+      <div class="tasks" id="g-done"></div>
+    </section>
+    <section class="task-group" data-group="stopped">
+      <div class="tg-head"><h3>已停止</h3><span class="tg-count" id="cnt-stopped">0</span></div>
+      <div class="tasks" id="g-stopped"></div>
+    </section>
+  </div>
+  <div class="empty" id="empty">暂无任务，选择店铺后点击「开始运行」</div>
+  </main>
+
+</div>
+
+<!-- 危险确认弹窗 -->
+<div class="modal-overlay" id="dangerModal">
+  <div class="modal">
+    <div class="modal-icon">⚠️</div>
+    <h3>高危操作 · 清除运行日志</h3>
+    <p id="dangerMsg"></p>
+    <div class="modal-actions">
+      <button class="btn btn-cancel btn-sm" id="dangerCancel">取消</button>
+      <button class="btn btn-confirm btn-sm" id="dangerConfirm">确认清除</button>
+    </div>
+  </div>
+</div>
+
+<!-- 异常商品报错明细弹窗 -->
+<div class="modal-overlay" id="errModal">
+  <div class="modal err-modal">
+    <div class="modal-head">
+      <h3>异常商品报错明细</h3>
+      <button class="modal-x" id="errClose" title="关闭">✕</button>
+    </div>
+    <div class="err-list" id="errBody"></div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel btn-sm" id="errCancel">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 全部报错汇总弹窗 -->
+<div class="modal-overlay" id="allErrModal">
+  <div class="modal err-modal">
+    <div class="modal-head">
+      <h3>全部报错汇总（已完成 / 已停止）</h3>
+      <button class="modal-x" id="allErrClose" title="关闭">✕</button>
+    </div>
+    <div class="err-list" id="allErrBody"></div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel btn-sm" id="allErrCancel">关闭</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<footer class="comic-contact" id="contactStrip">
+  <div class="cc-inner">
+    <div class="cc-sign" title="德才兼备"><span class="cc-a">德才</span><span class="cc-b">兼备</span></div>
+    <div class="cc-meta">
+      <span class="cc-label">联系方式</span>
+      <a class="cc-phone" href="tel:18359088749">18359088749</a>
+      <a class="cc-github" href="https://github.com/Laidecai" target="_blank" rel="noopener noreferrer">
+        <span class="cc-gh-ico">⎇</span> GitHub 主页 ↗
+      </a>
+    </div>
+  </div>
+</footer>
+
+<div class="coder-wrap" aria-hidden="true">
+  <div class="coder-gif"></div>
+</div>
+
+<script src="/assets/mascot.js"></script>
+<script src="/assets/gaia-execution.js?v=20260924-gaia-stop-2"></script>
+<script src="/assets/gaia-workspace.js?v=20260924-gaia-stop-2"></script>
+<script src="/assets/panel.js?v=20260924-clean-panel-1"></script>
+</body>
+</html>

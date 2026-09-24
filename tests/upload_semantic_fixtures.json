@@ -1,0 +1,10 @@
+[
+  {"product_id":"3837797321509306582","title":"vivo X300 二手手机","semantic_candidates":2,"strict_found":true,"strict_present":false,"loose_wrapper_present":true,"expect_upload":false,"expect_verify":false},
+  {"product_id":"3837804118177611952","title":"vivo X300 二手手机","semantic_candidates":2,"strict_found":true,"strict_present":false,"loose_wrapper_present":true,"expect_upload":false,"expect_verify":false},
+  {"product_id":"3837803486926471372","title":"vivo X Fold 5 二手手机","semantic_candidates":2,"strict_found":true,"strict_present":false,"loose_wrapper_present":true,"expect_upload":false,"expect_verify":false},
+  {"product_id":"3839680466907169106","title":"vivo X Fold 5 二手手机（2026-08-31真实回归）","semantic_candidates":1,"strict_found":true,"strict_present":true,"loose_wrapper_present":true,"expect_upload":true,"expect_verify":true},
+  {"product_id":"synthetic-unique","title":"唯一可见商品正面图槽位","semantic_candidates":1,"strict_found":true,"strict_present":true,"loose_wrapper_present":true,"expect_upload":true,"expect_verify":true},
+  {"product_id":"3837794637079249137","title":"vivo S30（主图上传联动产生两个预览）","semantic_candidates":1,"strict_found":true,"strict_present":true,"loose_wrapper_present":true,"global_delta":2,"expect_upload":true,"expect_verify":true},
+  {"product_id":"3837785782861562126","title":"三星 Galaxy S23+（主图上传联动产生两个预览）","semantic_candidates":1,"strict_found":true,"strict_present":true,"loose_wrapper_present":true,"global_delta":2,"expect_upload":true,"expect_verify":true},
+  {"product_id":"3837785911794466931","title":"三星 Galaxy S23 Ultra（只补第三张辅助图）","semantic_candidates":1,"strict_found":true,"strict_present":true,"loose_wrapper_present":true,"missing_aux_index":2,"expect_upload":true,"expect_verify":true}
+]

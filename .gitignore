@@ -1,0 +1,58 @@
+# Credentials and machine-specific environment (examples are safe to commit).
+.env
+.env.*
+env.local
+env.local.*
+!*.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Browser sessions, cookies, merchant data and generated workbooks.
+/chrome_user_data*/
+/gaia_browser_data/
+/storage_state*.json
+/panel_data/
+/logs/
+/outputs/
+/test_data/
+*.log
+*.out
+*.pid
+*.lock
+*.db
+*.sqlite*
+*.xlsx
+*.xls
+*.csv
+
+# Live operator identities and routing are configured separately on deployment.
+/config/operator_error_notifications.json
+
+# Local authorization screenshots and diagnostic exports.
+/lark*.png
+/tools/*_result.json
+/tools/*.png
+/tools/*.jpg
+/tools/*.jpeg
+/tools/*.webp
+/tests/real_browser_validation_set.json
+/docs/飞书主图重复目录删除计划_*.md
+/docs/型号匹配异常汇报_*.md
+/docs/gaia_goodsid_investigation_*.md
+/抖店开放平台授权异常反馈_*.md
+
+# Build caches and local tooling.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+node_modules/
+.DS_Store
+.idea/
+.vscode/
+.codex/
+.agents/

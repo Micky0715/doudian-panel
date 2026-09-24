@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "brand": "荣耀",
+      "lookup_models": [
+        "Magic V3"
+      ],
+      "official_name": "Magic V3",
+      "source_url": "https://www.honor.com/cn/phones/honor-magic-v3/",
+      "verified_at": "2026-09-18"
+    },
+    {
+      "brand": "荣耀",
+      "lookup_models": [
+        "X60 Pro"
+      ],
+      "official_name": "X60 Pro",
+      "source_url": "https://www.honor.com/cn/phones/honor-x60-pro/",
+      "verified_at": "2026-09-21"
+    },
+    {
+      "brand": "荣耀",
+      "lookup_models": [
+        "畅玩70m Plus"
+      ],
+      "official_name": "畅玩70m Plus",
+      "source_url": "https://www.honor.com/cn/phones/honor-changwan-70m-plus/",
+      "verified_at": "2026-09-21"
+    },
+    {
+      "brand": "华为",
+      "lookup_models": [
+        "nova 14 Ultra"
+      ],
+      "official_name": "nova 14 Ultra",
+      "source_url": "https://consumer.huawei.com/cn/phones/nova14-ultra/",
+      "verified_at": "2026-09-21"
+    }
+  ]
+}

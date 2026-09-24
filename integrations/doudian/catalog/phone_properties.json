@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "category": {
+    "id": 1000007628,
+    "name": "二手手机"
+  },
+  "properties": {
+    "screen_shape": {
+      "property_id": 6448,
+      "property_name": "屏幕形态",
+      "required": true,
+      "type": "select",
+      "multi_select_max": 5,
+      "source": "product.getCatePropertyV2",
+      "source_checked_at": "2026-09-03",
+      "auto_fill_policy": "explicit_only",
+      "options": [
+        {"name": "直屏", "value_id": 346803},
+        {"name": "曲面屏", "value_id": 11719},
+        {"name": "四曲面屏", "value_id": 675620},
+        {"name": "全等深微四曲屏", "value_id": 676520},
+        {"name": "悬浮四曲屏", "value_id": 676521}
+      ]
+    }
+  }
+}

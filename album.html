@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>素材相册 · 抖店多店铺控制台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   设计令牌（与抖店控制面板保持一致）
+   ============================================================ */
+:root{
+  --bg:#0b0d12;
+  --glass-bg:rgba(255,255,255,0.045);
+  --glass-bg-2:rgba(255,255,255,0.028);
+  --glass-border:rgba(255,255,255,0.10);
+  --glass-border-hi:rgba(255,255,255,0.18);
+  --glass-shadow:0 8px 32px rgba(0,0,0,0.45);
+  --glass-shadow-hi:0 16px 48px rgba(0,0,0,0.6);
+  --text:#e8ecf5; --text-sec:#a3adc2; --text-dim:#69738a;
+  --indigo:#7c83ff; --indigo-glow:rgba(124,131,255,0.35);
+  --teal:#2dd4bf; --teal-glow:rgba(45,212,191,0.30);
+  --violet:#a78bfa;
+  --amber:#fbbf24; --rose:#fb7185; --green:#34d399; --red:#f87171;
+  --radius:18px; --radius-sm:12px;
+  --font:'Inter',-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
+  --mono:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--text);font-family:var(--font);
+  font-size:14px;line-height:1.6;min-height:100vh;
+  padding:24px 20px 60px;overflow-x:hidden;
+}
+body::before{
+  content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background:
+    radial-gradient(900px 500px at 12% -8%, rgba(124,131,255,0.16), transparent 60%),
+    radial-gradient(760px 460px at 88% 8%, rgba(45,212,191,0.12), transparent 62%),
+    radial-gradient(700px 520px at 50% 108%, rgba(167,139,250,0.12), transparent 60%);
+}
+.blob{position:fixed;border-radius:50%;filter:blur(90px);opacity:.5;pointer-events:none;z-index:0;
+  animation:blobFloat 24s ease-in-out infinite alternate}
+.b1{width:440px;height:440px;background:radial-gradient(circle,rgba(124,131,255,0.30),transparent 70%);top:-140px;left:-100px}
+.b2{width:380px;height:380px;background:radial-gradient(circle,rgba(45,212,191,0.24),transparent 70%);bottom:-120px;right:-80px;animation-duration:28s;animation-delay:-6s}
+.b3{width:300px;height:300px;background:radial-gradient(circle,rgba(167,139,250,0.20),transparent 70%);top:42%;left:56%;animation-duration:32s;animation-delay:-12s}
+@keyframes blobFloat{0%{transform:translate(0,0) scale(1)}100%{transform:translate(46px,-34px) scale(1.1)}}
+
+.wrap{position:relative;z-index:1;max-width:1280px;margin:0 auto}
+
+/* 玻璃基础 */
+.glass{
+  background:var(--glass-bg);
+  backdrop-filter:blur(22px) saturate(150%);
+  -webkit-backdrop-filter:blur(22px) saturate(150%);
+  border:1px solid var(--glass-border);
+  border-radius:var(--radius);
+  box-shadow:var(--glass-shadow);
+  transition:all .35s cubic-bezier(.4,0,.2,1);
+  position:relative;
+}
+.glass::before{
+  content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:linear-gradient(180deg,rgba(255,255,255,0.06),transparent 42%);
+}
+.glass:hover{border-color:var(--glass-border-hi);box-shadow:var(--glass-shadow-hi)}
+
+/* ============================================================
+   顶栏 / 工具条
+   ============================================================ */
+header{display:flex;align-items:center;gap:14px;padding:16px 22px;margin-bottom:18px;flex-wrap:wrap}
+header h1{font-size:18px;font-weight:700;letter-spacing:.2px;
+  background:linear-gradient(92deg,#fff,#b9c0ff 55%,#8ee9dc);
+  -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+header .sub{font-size:12px;color:var(--text-dim)}
+.spacer{flex:1}
+.linkbtn{font-size:12.5px;color:var(--text-sec);text-decoration:none;padding:8px 14px;border-radius:10px;
+  border:1px solid var(--glass-border);background:rgba(255,255,255,0.04);transition:.2s;display:inline-flex;align-items:center;gap:6px}
+.linkbtn:hover{color:var(--text);border-color:var(--glass-border-hi);background:rgba(255,255,255,0.08)}
+
+.toolbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:16px 20px;margin-bottom:16px}
+.search{flex:1;min-width:200px;display:flex;align-items:center;gap:8px;padding:0 12px;
+  background:rgba(255,255,255,0.05);border:1px solid var(--glass-border);border-radius:var(--radius-sm);backdrop-filter:blur(8px)}
+.search:focus-within{border-color:rgba(124,131,255,.7);box-shadow:0 0 0 3px var(--indigo-glow)}
+.search svg{flex:none;opacity:.6}
+.search input{flex:1;background:none;border:none;outline:none;color:var(--text);font-family:var(--font);font-size:13px;padding:10px 0}
+.search input::placeholder{color:var(--text-dim)}
+select{background:rgba(255,255,255,0.05);border:1px solid var(--glass-border);color:var(--text);
+  border-radius:var(--radius-sm);padding:10px 12px;font-size:13px;font-family:var(--font);outline:none;
+  transition:.2s;backdrop-filter:blur(8px);cursor:pointer;max-width:240px}
+select option{background:#141821;color:var(--text)}
+select:focus{border-color:rgba(124,131,255,.7);box-shadow:0 0 0 3px var(--indigo-glow)}
+.count{font-size:12px;color:var(--text-dim);font-family:var(--mono);white-space:nowrap}
+
+/* 分类标签 */
+.tabs{display:flex;gap:10px;overflow-x:auto;padding:4px 2px 12px;scrollbar-width:none}
+.tabs::-webkit-scrollbar{display:none}
+.tab{flex:none;font-size:13px;font-weight:500;color:var(--text-sec);cursor:pointer;
+  padding:8px 16px;border-radius:20px;border:1px solid var(--glass-border);
+  background:rgba(255,255,255,0.03);transition:.22s;white-space:nowrap}
+.tab:hover{color:var(--text);border-color:var(--glass-border-hi)}
+.tab.active{color:#fff;border-color:transparent;
+  background:linear-gradient(135deg,#6f76ff,#9b7dff);box-shadow:0 6px 18px rgba(124,131,255,.35)}
+
+/* ============================================================
+   网格
+   ============================================================ */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:18px;margin-top:6px}
+.card{position:relative;border-radius:var(--radius-sm);overflow:hidden;cursor:pointer;
+  border:1px solid var(--glass-border);background:var(--glass-bg);
+  transition:transform .3s cubic-bezier(.4,0,.2,1),border-color .3s,box-shadow .3s;
+  animation:cardIn .45s cubic-bezier(.2,.7,.3,1) both}
+@keyframes cardIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+.card:hover{transform:translateY(-4px);border-color:var(--glass-border-hi);box-shadow:var(--glass-shadow-hi)}
+.card .thumb{width:100%;display:block;background:#0e1118}
+.card .meta{position:absolute;left:0;right:0;bottom:0;padding:28px 14px 12px;
+  background:linear-gradient(0deg,rgba(8,10,15,.86),transparent);opacity:0;transform:translateY(8px);
+  transition:.28s;display:flex;flex-direction:column;gap:5px}
+.card:hover .meta,.card:focus-within .meta{opacity:1;transform:translateY(0)}
+.card .meta .t{font-size:13.5px;font-weight:600;color:#fff;line-height:1.35}
+.card .meta .row{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--text-sec)}
+.chip{font-size:10.5px;padding:2px 9px;border-radius:20px;font-weight:600;
+  border:1px solid rgba(124,131,255,0.32);background:rgba(124,131,255,0.12);color:#aab0ff}
+.chip.teal{border-color:rgba(45,212,191,0.32);background:rgba(45,212,191,0.12);color:#8ee9dc}
+.corner{position:absolute;top:10px;left:10px;font-family:var(--mono);font-size:10.5px;
+  padding:3px 8px;border-radius:8px;background:rgba(8,10,15,.6);color:var(--text-sec);
+  border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(6px)}
+
+.empty{border:1px dashed rgba(255,255,255,0.12);border-radius:var(--radius);
+  padding:60px;text-align:center;color:var(--text-dim);font-size:13.5px;background:var(--glass-bg-2);margin-top:10px}
+
+/* ============================================================
+   灯箱 / Lightbox
+   ============================================================ */
+.lb{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;
+  background:rgba(6,8,13,.72);backdrop-filter:blur(16px) saturate(140%);-webkit-backdrop-filter:blur(16px) saturate(140%)}
+.lb.open{display:flex;animation:fadeIn .25s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.lb-stage{position:relative;max-width:92vw;max-height:82vh;display:flex;flex-direction:column;align-items:center;gap:14px}
+.lb-imgwrap{position:relative;overflow:hidden;border-radius:14px;border:1px solid var(--glass-border-hi);
+  box-shadow:0 24px 70px rgba(0,0,0,.6);background:#0e1118;max-width:92vw;max-height:68vh}
+.lb-img{display:block;max-width:92vw;max-height:68vh;transition:transform .3s cubic-bezier(.4,0,.2,1);transform-origin:center}
+.lb-img.zoom{transform:scale(1.7);cursor:zoom-out}
+.lb-imgwrap.zoomable{cursor:zoom-in}
+.lb-cap{text-align:center;max-width:90vw}
+.lb-cap .t{font-size:16px;font-weight:600;color:#fff}
+.lb-cap .row{display:flex;gap:10px;justify-content:center;align-items:center;margin-top:6px;font-size:12.5px;color:var(--text-sec);flex-wrap:wrap}
+.lb-counter{position:absolute;top:18px;right:22px;font-family:var(--mono);font-size:13px;color:var(--text-sec);
+  background:rgba(8,10,15,.55);padding:5px 12px;border-radius:20px;border:1px solid rgba(255,255,255,.1)}
+.lb-btn{position:absolute;top:50%;transform:translateY(-50%);width:46px;height:46px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;font-size:22px;
+  background:rgba(255,255,255,0.06);border:1px solid var(--glass-border);backdrop-filter:blur(8px);transition:.2s;user-select:none}
+.lb-btn:hover{background:rgba(255,255,255,0.14);border-color:var(--glass-border-hi)}
+.lb-prev{left:18px}.lb-next{right:18px}
+.lb-close{position:absolute;top:16px;left:22px;width:40px;height:40px;font-size:20px}
+.lb-zoom{position:absolute;top:16px;right:78px;width:40px;height:40px;font-size:16px}
+.lb-thumbs{display:flex;gap:8px;overflow-x:auto;padding:6px 2px;max-width:92vw;scrollbar-width:none}
+.lb-thumbs::-webkit-scrollbar{display:none}
+.lb-thumbs img{width:64px;height:44px;object-fit:cover;border-radius:8px;cursor:pointer;opacity:.5;
+  border:1.5px solid transparent;transition:.2s;flex:none}
+.lb-thumbs img:hover{opacity:.85}
+.lb-thumbs img.active{opacity:1;border-color:var(--indigo);box-shadow:0 0 0 2px var(--indigo-glow)}
+
+/* ============================================================
+   响应式
+   ============================================================ */
+@media (max-width:760px){
+  body{padding:16px 12px 48px}
+  .grid{grid-template-columns:repeat(2,1fr);gap:12px}
+  .toolbar{padding:14px}
+  .search{min-width:100%}
+  select{max-width:100%;width:100%}
+  .lb-prev{left:8px}.lb-next{right:8px}
+  .lb-btn{width:40px;height:40px}
+  .lb-imgwrap,.lb-img{max-width:96vw;max-height:60vh}
+  .lb-zoom{right:64px}
+  .card .meta{opacity:1;transform:none;padding-top:24px} /* 移动端常显 */
+}
+@media (max-width:380px){.grid{grid-template-columns:repeat(2,1fr);gap:10px}}
+</style>
+</head>
+<body>
+<div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div>
+
+<div class="wrap">
+  <header class="glass">
+    <h1>素材相册</h1>
+    <span class="sub">抖店多店铺 · 商品素材库</span>
+    <div class="spacer"></div>
+    <a class="linkbtn" id="backLink" href="/">← 返回控制台</a>
+  </header>
+
+  <div class="toolbar glass">
+    <label class="search">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+      <input id="q" type="text" placeholder="搜索素材名称 / 标签…" autocomplete="off">
+    </label>
+    <select id="shopSel" title="按店铺筛选"><option value="all">全部店铺</option></select>
+    <span class="count" id="count">—</span>
+  </div>
+
+  <div class="tabs" id="tabs"></div>
+
+  <div class="grid" id="grid"></div>
+  <div class="empty" id="empty" style="display:none">没有匹配的素材，换个筛选条件试试。</div>
+</div>
+
+<!-- 灯箱 -->
+<div class="lb" id="lb" aria-hidden="true">
+  <div class="lb-counter" id="lbCounter">1 / 1</div>
+  <div class="lb-btn lb-close" id="lbClose" title="关闭 (Esc)">✕</div>
+  <div class="lb-btn lb-zoom" id="lbZoom" title="缩放">⤢</div>
+  <div class="lb-btn lb-prev" id="lbPrev" title="上一张 (←)">‹</div>
+  <div class="lb-btn lb-next" id="lbNext" title="下一张 (→)">›</div>
+  <div class="lb-stage">
+    <div class="lb-imgwrap zoomable" id="lbImgWrap"><img class="lb-img" id="lbImg" src="" alt=""></div>
+    <div class="lb-cap"><div class="t" id="lbTitle"></div><div class="row" id="lbRow"></div></div>
+    <div class="lb-thumbs" id="lbThumbs"></div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   数据模型（可维护：分类 / 店铺 / 素材 均集中定义）
+   ============================================================ */
+const CATEGORIES = [
+  {id:'all',    name:'全部素材'},
+  {id:'main',   name:'主图'},
+  {id:'detail', name:'详情图'},
+  {id:'video',  name:'短视频封面'},
+  {id:'live',   name:'直播素材'},
+  {id:'draft',  name:'草稿箱'},
+];
+const CAT_NAME = Object.fromEntries(CATEGORIES.map(c=>[c.id,c.name]));
+
+// 兜底店铺（若无法从控制台 /api/shops 拉取时使用）
+const SAMPLE_SHOPS = ['美妆旗舰店','服饰旗舰店','家居生活馆','食品严选','数码配件铺','母婴优选'];
+
+// 渐变配色（与面板点缀色一致）
+const PALETTES = [
+  ['#7c83ff','#a78bfa'], ['#2dd4bf','#34d399'], ['#fb7185','#fbbf24'],
+  ['#60a5fa','#7c83ff'], ['#f472b6','#a78bfa'], ['#34d399','#2dd4bf'],
+  ['#fbbf24','#fb7185'], ['#a78bfa','#60a5fa'],
+];
+
+// 素材条目（演示数据；接入真实数据时替换 src 即可）
+const ITEMS = [
+  {id:'m01', title:'水光精华液主图',     cat:'main',   shop:'美妆旗舰店', tags:['促销','618'],        w:600,h:600, p:0},
+  {id:'m02', title:'纯棉短袖详情页',     cat:'detail', shop:'服饰旗舰店', tags:['新品'],             w:600,h:800, p:1},
+  {id:'m03', title:'直播切片封面A',       cat:'video',  shop:'美妆旗舰店', tags:['直播','高转化'],     w:600,h:338, p:3},
+  {id:'m04', title:'北欧风抱枕场景图',   cat:'detail', shop:'家居生活馆', tags:['场景'],             w:600,h:450, p:5},
+  {id:'m05', title:'坚果礼盒主图',       cat:'main',   shop:'食品严选',   tags:['年货','礼盒'],       w:600,h:600, p:6},
+  {id:'m06', title:'无线耳机草稿',       cat:'draft',  shop:'数码配件铺', tags:['待审'],             w:600,h:600, p:2},
+  {id:'m07', title:'婴儿湿巾主图',       cat:'main',   shop:'母婴优选',   tags:['安全','安心'],       w:600,h:600, p:7},
+  {id:'m08', title:'直播背景墙',         cat:'live',   shop:'服饰旗舰店', tags:['直播间'],           w:600,h:338, p:4},
+  {id:'m09', title:'口红试色九宫格',     cat:'detail', shop:'美妆旗舰店', tags:['试色'],             w:600,h:600, p:0},
+  {id:'m10', title:'羽绒服卖点图',       cat:'detail', shop:'服饰旗舰店', tags:['保暖'],             w:600,h:800, p:1},
+  {id:'m11', title:'短视频封面B',         cat:'video',  shop:'食品严选',   tags:['种草'],             w:600,h:338, p:3},
+  {id:'m12', title:'香薰蜡烛主图',       cat:'main',   shop:'家居生活馆', tags:['氛围'],             w:600,h:600, p:5},
+  {id:'m13', title:'直播特写镜头',       cat:'live',   shop:'美妆旗舰店', tags:['特写'],             w:600,h:338, p:4},
+  {id:'m14', title:'充电宝草稿',         cat:'draft',  shop:'数码配件铺', tags:['待审'],             w:600,h:450, p:2},
+  {id:'m15', title:'辅食机主图',         cat:'main',   shop:'母婴优选',   tags:['实用'],             w:600,h:600, p:7},
+  {id:'m16', title:'坚果吃到图',         cat:'detail', shop:'食品严选',   tags:['实拍'],             w:600,h:450, p:6},
+  {id:'m17', title:'卫衣平铺图',         cat:'main',   shop:'服饰旗舰店', tags:['基础款'],           w:600,h:600, p:1},
+  {id:'m18', title:'精华直播预告',       cat:'video',  shop:'美妆旗舰店', tags:['预告'],             w:600,h:338, p:0},
+];
+ITEMS.forEach(it=>{ it.palette = PALETTES[it.p % PALETTES.length]; });
+
+/* ============================================================
+   占位图生成（自包含，离线可用；接入真实图时把 src 指向图片 URL 即可）
+   ============================================================ */
+function escapeXml(s){return String(s).replace(/[<>&'"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;'}[c]));}
+function placeholder(it, big){
+  const [c1,c2]=it.palette;
+  const W=big?1280:640, H=Math.round(W*it.h/it.w);
+  const svg=`<svg xmlns='http://www.w3.org/2000/svg' width='${W}' height='${H}' viewBox='0 0 ${W} ${H}'>`+
+    `<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='${c1}'/><stop offset='1' stop-color='${c2}'/></linearGradient>`+
+    `<radialGradient id='r' cx='28%' cy='22%' r='85%'><stop offset='0' stop-color='rgba(255,255,255,.30)'/><stop offset='1' stop-color='rgba(255,255,255,0)'/></radialGradient></defs>`+
+    `<rect width='100%' height='100%' fill='url(#g)'/><rect width='100%' height='100%' fill='url(#r)'/>`+
+    `<circle cx='${W*0.82}' cy='${H*0.18}' r='${W*0.15}' fill='rgba(255,255,255,.10)'/>`+
+    `<circle cx='${W*0.16}' cy='${H*0.84}' r='${W*0.11}' fill='rgba(0,0,0,.10)'/>`+
+    `<text x='50%' y='47%' text-anchor='middle' font-family='Inter,sans-serif' font-size='${big?48:30}' font-weight='700' fill='rgba(255,255,255,.96)'>${escapeXml(it.title)}</text>`+
+    `<text x='50%' y='57%' text-anchor='middle' font-family='Inter,sans-serif' font-size='${big?24:15}' fill='rgba(255,255,255,.78)'>${escapeXml(it.shop)} · ${CAT_NAME[it.cat]}</text>`+
+    `<text x='${W-26}' y='${H-24}' text-anchor='end' font-family='JetBrains Mono,monospace' font-size='${big?22:13}' fill='rgba(255,255,255,.62)'>${it.id.toUpperCase()}</text>`+
+    `</svg>`;
+  return 'data:image/svg+xml;utf8,'+encodeURIComponent(svg);
+}
+
+/* ============================================================
+   状态 & 渲染
+   ============================================================ */
+const state = {cat:'all', shop:'all', q:''};
+let SHOPS = SAMPLE_SHOPS.slice();
+let currentList = [];   // 当前筛选结果（灯箱导航用）
+
+const $ = id=>document.getElementById(id);
+
+function renderTabs(){
+  $('tabs').innerHTML = CATEGORIES.map(c=>
+    `<div class="tab${c.id===state.cat?' active':''}" data-cat="${c.id}">${c.name}</div>`).join('');
+  $('tabs').querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+    state.cat=t.dataset.cat; renderTabs(); renderGrid();
+  });
+}
+function renderShopFilter(){
+  const sel=$('shopSel');
+  sel.innerHTML = '<option value="all">全部店铺</option>' +
+    SHOPS.map(s=>`<option value="${escapeXml(s)}">${escapeXml(s)}</option>`).join('');
+  sel.onchange=()=>{ state.shop=sel.value; renderGrid(); };
+}
+function filtered(){
+  const q=state.q.trim().toLowerCase();
+  return ITEMS.filter(it=>
+    (state.cat==='all'||it.cat===state.cat) &&
+    (state.shop==='all'||it.shop===state.shop) &&
+    (!q || it.title.toLowerCase().includes(q) || it.tags.join(' ').toLowerCase().includes(q))
+  );
+}
+function renderGrid(){
+  currentList = filtered();
+  const grid=$('grid'), empty=$('empty');
+  $('count').textContent = currentList.length + ' 项';
+  if(!currentList.length){ grid.innerHTML=''; empty.style.display='block'; return; }
+  empty.style.display='none';
+  grid.innerHTML = currentList.map((it,i)=>`
+    <div class="card" data-i="${i}" tabindex="0" role="button" aria-label="${escapeXml(it.title)}">
+      <span class="corner">${it.id.toUpperCase()}</span>
+      <img class="thumb" loading="lazy" src="${placeholder(it,false)}" alt="${escapeXml(it.title)}"
+           style="aspect-ratio:${it.w}/${it.h}">
+      <div class="meta">
+        <div class="t">${escapeXml(it.title)}</div>
+        <div class="row">
+          <span class="chip">${CAT_NAME[it.cat]}</span>
+          <span>${escapeXml(it.shop)}</span>
+        </div>
+      </div>
+    </div>`).join('');
+  grid.querySelectorAll('.card').forEach(c=>{
+    c.onclick=()=>openLightbox(+c.dataset.i);
+    c.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){e.preventDefault();openLightbox(+c.dataset.i);} };
+  });
+}
+
+/* ============================================================
+   灯箱交互（键盘 / 触摸滑动 / 缩略图 / 缩放）
+   ============================================================ */
+const lb=$('lb');
+let lbIndex=0;
+function openLightbox(i){
+  lbIndex=i; updateLightbox(); lb.classList.add('open'); lb.setAttribute('aria-hidden','false');
+  document.body.style.overflow='hidden';
+}
+function closeLightbox(){
+  lb.classList.remove('open'); lb.setAttribute('aria-hidden','true');
+  $('lbImg').classList.remove('zoom'); $('lbImgWrap').classList.add('zoomable');
+  document.body.style.overflow='';
+}
+function updateLightbox(){
+  const it=currentList[lbIndex]; if(!it) return;
+  const img=$('lbImg');
+  img.classList.remove('zoom'); $('lbImgWrap').classList.add('zoomable');
+  img.src=placeholder(it,true);
+  $('lbTitle').textContent=it.title;
+  $('lbRow').innerHTML=`<span class="chip">${CAT_NAME[it.cat]}</span>`+
+    `<span>${escapeXml(it.shop)}</span>`+
+    it.tags.map(t=>`<span class="chip teal">#${escapeXml(t)}</span>`).join('');
+  $('lbCounter').textContent=`${lbIndex+1} / ${currentList.length}`;
+  renderThumbs();
+}
+function navLightbox(dir){ lbIndex=(lbIndex+dir+currentList.length)%currentList.length; updateLightbox(); }
+function renderThumbs(){
+  $('lbThumbs').innerHTML=currentList.map((it,i)=>
+    `<img src="${placeholder(it,false)}" data-i="${i}" class="${i===lbIndex?'active':''}" alt="">`).join('');
+  $('lbThumbs').querySelectorAll('img').forEach(t=>t.onclick=()=>{lbIndex=+t.dataset.i;updateLightbox();});
+}
+$('lbClose').onclick=closeLightbox;
+$('lbPrev').onclick=()=>navLightbox(-1);
+$('lbNext').onclick=()=>navLightbox(1);
+$('lbZoom').onclick=()=>{ const img=$('lbImg'); img.classList.toggle('zoom');
+  $('lbImgWrap').classList.toggle('zoomable',!img.classList.contains('zoom')); };
+lb.onclick=e=>{ if(e.target===lb) closeLightbox(); };
+document.addEventListener('keydown',e=>{
+  if(!lb.classList.contains('open')) return;
+  if(e.key==='Escape') closeLightbox();
+  else if(e.key==='ArrowLeft') navLightbox(-1);
+  else if(e.key==='ArrowRight') navLightbox(1);
+});
+// 触摸滑动
+let tsx=0,tty=0;
+$('lbImgWrap').addEventListener('touchstart',e=>{tsx=e.changedTouches[0].clientX;tty=e.changedTouches[0].clientY;},{passive:true});
+$('lbImgWrap').addEventListener('touchend',e=>{
+  const dx=e.changedTouches[0].clientX-tsx, dy=e.changedTouches[0].clientY-tty;
+  if(Math.abs(dx)>50 && Math.abs(dx)>Math.abs(dy)) navLightbox(dx<0?1:-1);
+},{passive:true});
+
+/* ============================================================
+   初始化
+   ============================================================ */
+function setupBackLink(){
+  const back=$('backLink');
+  back.href = (location.port==='8080'||location.hostname==='127.0.0.1'||location.hostname==='localhost') ? '/' : 'http://127.0.0.1:8080/';
+}
+function loadShops(){
+  // 从控制台拉取真实店铺；失败则保留兜底店铺
+  fetch('/api/shops').then(r=>r.ok?r.json():Promise.reject()).then(d=>{
+    if(Array.isArray(d)&&d.length){ SHOPS=d.map(s=>s.name);
+      // 用真实店铺回填演示数据，使筛选可用
+      ITEMS.forEach((it,i)=>{ it.shop=SHOPS[i%SHOPS.length]; });
+      renderShopFilter(); renderGrid();
+    }
+  }).catch(()=>{});
+}
+$('q').addEventListener('input',e=>{ state.q=e.target.value; renderGrid(); });
+setupBackLink();
+renderTabs();
+renderShopFilter();
+renderGrid();
+loadShops();
+</script>
+</body>
+</html>

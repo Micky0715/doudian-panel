@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "pricing_detail",
+      "name": "严选价格规则明细",
+      "filename_patterns": ["严选价格规则.*明细表.*\\.xlsx$"],
+      "required_headers": ["规则编码", "拍拍标品SKUID", "品牌名称", "型号名称", "成色名称", "生效销售价"]
+    },
+    {
+      "id": "gaia_goods_price_mapping",
+      "name": "盖亚货品维度标品映射表",
+      "filename_patterns": [".*抖音直播货架货品价格规则数据导出.*\\.xlsx$"],
+      "required_headers": ["类目", "品牌", "型号", "货品ID", "拍拍标品skuId", "标品名称", "一维成色"]
+    },
+    {
+      "id": "gaia_publish_template",
+      "name": "盖亚双维成色发品模板",
+      "filename_patterns": [".*(批量操作模板|双维成色).*\\.xlsx$"],
+      "required_headers": [
+        "场域（1、直播间；2、直播货架）",
+        "聚合标识（英文）",
+        "是否质检链接（1-是，0-否）",
+        "标品ID（standardSkuId）",
+        "抖音成色ID（dyQualityId）",
+        "名称前缀（namePrefix）",
+        "选品策略，可以使用“且”、“或”、“非”\n三个逻辑词语组合货品标签",
+        "商品规则前缀（例如A-B-C-）"
+      ]
+    }
+  ]
+}
