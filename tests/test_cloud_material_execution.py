@@ -396,6 +396,72 @@ class CloudMaterialExecutionTests(unittest.TestCase):
 
         self.assertEqual(bundle.main.file_token, "xiaomi")
 
+    def test_numbered_redmi_mains_pick_one_stably_without_crossing_models(self):
+        blobs = {name: square_png(name.encode()) for name in
+                 ("max1", "max3", "max4", "pro1", "xiaomi", "w1", "w2")}
+        tree = {
+            "root": (folder("main-root", "抖音主图"), folder("white-root", "白底图库")),
+            "main-root": (folder("shop", "51165770"),),
+            "shop": (folder("phones", "手机"),),
+            "phones": (folder("redmi", "Redmi"), folder("xiaomi-brand", "小米")),
+            "redmi": tuple(remote_file(token, name, len(blobs[token])) for token, name in (
+                ("max1", "REDMI K100 Pro Max_1.png"),
+                ("max3", "REDMI K100 Pro Max_3.png"),
+                ("max4", "REDMI K100 Pro Max_4.png"),
+                ("pro1", "REDMI K100 Pro_1.png"),
+                ("xiaomi", "小米 K100 Pro Max_1.png"),
+            )),
+            "xiaomi-brand": (remote_file("xiaomi", "小米 K100 Pro Max_1.png", len(blobs["xiaomi"])),),
+            "white-root": (folder("white-phone", "手机"),),
+            "white-phone": (folder("white-redmi", "Redmi"),),
+            "white-redmi": (folder("white-model", "REDMI K100 Pro Max"),),
+            "white-model": (
+                remote_file("w1", "黑色.png", len(blobs["w1"])),
+                remote_file("w2", "白色.png", len(blobs["w2"])),
+            ),
+        }
+        layout = FeishuMaterialLayout.from_mapping({
+            "FEISHU_MAIN_PATH_LAYOUT": "shop_model",
+            "FEISHU_BRAND_FOLDER_MAP_JSON": '{"红米":"Redmi"}',
+        })
+        first = FeishuMaterialCatalog(FakeTreeDrive(blobs, tree), layout=layout)
+        bundle = first.resolve_bundle("51165770", "红米", "K100 Pro Max")
+        self.assertIn(bundle.main.file_token, {"max1", "max3", "max4"})
+        self.assertNotEqual(bundle.main.file_token, "pro1")
+        self.assertNotEqual(bundle.main.file_token, "xiaomi")
+        self.assertEqual(
+            bundle.main.file_token,
+            FeishuMaterialCatalog(FakeTreeDrive(blobs, tree), layout=layout)
+            .resolve_bundle("51165770", "红米", "K100 Pro Max").main.file_token,
+        )
+        pro_files, _ = first._remote_main_files(first._main_prefix("51165770", "红米"),
+                                                  "红米", "K100 Pro")
+        self.assertEqual([item.file_token for item in pro_files], ["pro1"])
+
+    def test_exact_model_main_folder_can_contain_multiple_cover_images(self):
+        blobs = {name: square_png(name.encode()) for name in ("a", "b")}
+        tree = {
+            "root": (folder("main-root", "抖音主图"),),
+            "main-root": (folder("shop", "51165770"),),
+            "shop": (folder("phones", "手机"),),
+            "phones": (folder("redmi", "Redmi"),),
+            "redmi": (folder("model", "REDMI K100 Pro Max"),),
+            "model": (folder("covers", "主图"),),
+            "covers": (
+                remote_file("a", "封面甲.png", len(blobs["a"])),
+                remote_file("b", "封面乙.png", len(blobs["b"])),
+            ),
+        }
+        layout = FeishuMaterialLayout.from_mapping({
+            "FEISHU_MAIN_PATH_LAYOUT": "shop_model",
+            "FEISHU_BRAND_FOLDER_MAP_JSON": '{"红米":"Redmi"}',
+        })
+        catalog = FeishuMaterialCatalog(FakeTreeDrive(blobs, tree), layout=layout)
+        files, _ = catalog._remote_main_files(catalog._main_prefix("51165770", "红米"),
+                                               "红米", "K100 Pro Max")
+        self.assertEqual(len(files), 1)
+        self.assertIn(files[0].file_token, {"a", "b"})
+
     def test_live_main_lookup_searches_duplicate_brand_branches_for_one_model_hit(self):
         blobs = {
             "main": square_png(b"main"),
@@ -552,7 +618,7 @@ class CloudMaterialExecutionTests(unittest.TestCase):
 
         self.assertEqual(bundle.main.file_token, "spaced")
 
-    def test_live_direct_main_lookup_rejects_duplicate_literal_files(self):
+    def test_live_direct_main_lookup_picks_one_duplicate_literal_file(self):
         blobs = {
             "a": square_png(b"a"),
             "b": square_png(b"b"),
@@ -571,10 +637,10 @@ class CloudMaterialExecutionTests(unittest.TestCase):
             "FEISHU_MAIN_PATH_LAYOUT": "shop_model",
         })
 
-        with self.assertRaisesRegex(ValueError, "多个原始型号文字相同"):
-            FeishuMaterialCatalog(
-                FakeTreeDrive(blobs, tree), layout=layout,
-            ).resolve_bundle("156450040", "苹果", "iPhone 16e")
+        bundle = FeishuMaterialCatalog(
+            FakeTreeDrive(blobs, tree), layout=layout,
+        ).resolve_bundle("156450040", "苹果", "iPhone 16e")
+        self.assertIn(bundle.main.file_token, {"a", "b"})
 
     def test_recursive_main_lookup_rejects_two_nearest_model_matches(self):
         blobs = {

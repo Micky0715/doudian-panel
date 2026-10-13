@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/assets/panel.css?v=20260924-clean-panel-1">
+  <link rel="stylesheet" href="/assets/panel.css?v=20261012-gaia-activity-field-1">
 </head>
 <body>
 <div class="wrap">
@@ -109,23 +109,33 @@
       <section class="workflow-card gaia-quick-start">
       <fieldset id="gaiaFormFields" class="gaia-form-fields">
         <div class="section-heading">
-          <div><h3>盖亚铺货</h3><p class="card-intro">填好信息，点击开始。系统自动匹配型号、填写表格并上传盖亚。</p></div>
+          <div><h3>盖亚铺货</h3><p class="card-intro">填好信息，点击开始。选择分期时依次发品、导入价格规则，并为本批商品报名指定免息活动。</p></div>
           <span class="status-chip neutral" id="gaiaGenerationStatus">待填写</span>
         </div>
         <div class="gaia-basic-fields">
           <label class="field"><span class="field-label">目标店铺</span><select id="gaiaShop" required><option value="">请选择目标店铺</option></select></label>
           <label class="field"><span class="field-label">场域</span><select id="gaiaScene"><option value="2">直播货架</option><option value="1">直播间</option></select></label>
-          <label class="field"><span class="field-label">成色</span><select id="gaiaCondition" required><option value="">请选择成色</option><option value="99新">99新</option><option value="95新">95新</option></select></label>
+          <div class="field gaia-quality-field"><span class="field-label" id="gaiaConditionLabel">成色 <small>可多选</small></span>
+            <div class="gaia-quality-options" id="gaiaCondition" role="group" aria-labelledby="gaiaConditionLabel">
+              <label><input type="checkbox" value="99新" checked><span>99新</span></label>
+              <label><input type="checkbox" value="95新"><span>95新</span></label>
+              <label><input type="checkbox" value="9新"><span>9新</span></label>
+              <label><input type="checkbox" value="准新机"><span>准新机</span></label>
+            </div>
+          </div>
+          <label class="field"><span class="field-label">付款方式 <small>直播货架</small></span><select id="gaiaPriceInstallments"><option value="full">全款（不处理分期）</option><option value="12" selected>12 期</option><option value="24">24 期</option></select></label>
+          <label class="field gaia-activity-field" id="gaiaActivityField"><span class="field-label">分期免息活动名称 <small>按抖店活动卡片填写</small></span><input id="gaiaActivityName" type="text" maxlength="120" autocomplete="off" placeholder="例如：【专享】年框商家双11大回馈" aria-describedby="gaiaActivityHint"><small id="gaiaActivityHint">仅支持单品/部分商品活动；会随本批次保存，匹配不唯一时停止。</small></label>
           <label class="field gaia-model-field"><span class="field-label">手机型号 <small>每行一个，建议带上品牌</small></span><textarea id="gaiaModels" rows="4" placeholder="苹果,iPhone 17 Pro&#10;OPPO,Find X8&#10;小米,Redmi K80"></textarea></label>
         </div>
       </fieldset>
         <div class="gaia-run-row">
           <button class="btn btn-primary gaia-start-btn" id="gaiaStartBtn" type="button" disabled>开始执行</button>
           <button class="btn" id="gaiaStopBtn" type="button" disabled aria-describedby="gaiaStopHint" title="提交前停止；已提交盖亚的任务不能撤回">停止任务</button>
-          <span>会真实上传并提交到所选盖亚店铺；不会启动抖店发布。</span>
+          <span>会真实提交盖亚；选择分期时还会尝试在抖店报名活动，不会启动抖店商品发布。</span>
         </div>
         <p id="gaiaStopHint" class="gaia-stop-hint" role="status" aria-live="polite">任务开始后可在提交前停止；已提交盖亚的任务无法撤回。</p>
-        <div id="gaiaUploadStatus" class="gaia-run-status" role="status" aria-live="polite">模板和映射表自动读取，无需手动匹配或填 ID。盖亚要求登录时，请在弹出的窗口登录。</div>
+        <div id="gaiaUploadStatus" class="gaia-run-status" role="status" aria-live="polite">使用面板已保存并校验的模板和映射表，无需在服务器下载目录准备文件。盖亚要求登录时，请在弹出的窗口登录。</div>
+        <p id="gaiaInputVersions" class="gaia-stop-hint" role="status">正在检查当前模板和映射表版本…</p>
         <details class="gaia-details gaia-run-details" id="gaiaResultDetails">
           <summary><span>匹配结果与执行明细</span><i>⌄</i></summary>
           <div class="inspect-summary gaia-model-match-result" id="gaiaModelMatchResult">填写型号后，点击开始自动匹配。</div>
@@ -139,28 +149,29 @@
         <summary><span>高级设置 <small>更换映射表、查看规则或分步排查；日常操作无需展开</small></span><i>⌄</i></summary>
         <div class="gaia-grid">
           <section class="gaia-advanced-section">
-            <div class="section-heading"><h3>发品模板</h3><span class="status-chip neutral" id="gaiaSourceStatus">自动读取</span></div>
-            <button class="btn" id="gaiaChooseFile" type="button">检查最新模板</button>
-            <div class="selected-file" id="gaiaSelectedFile">开始时自动选择最新有效模板</div>
+            <div class="section-heading"><h3>发品模板</h3><span class="status-chip neutral" id="gaiaSourceStatus">检查中</span></div>
+            <input type="file" id="gaiaTemplateFile" accept=".xlsx" hidden>
+            <div class="workflow-actions"><button class="btn" id="gaiaChooseFile" type="button">检查当前模板</button><button class="btn" id="gaiaChooseTemplateFile" type="button">更换模板</button></div>
+            <div class="selected-file" id="gaiaSelectedFile">正在读取面板保存的模板版本</div>
             <div class="inspect-summary" id="gaiaInspectSummary">只生成并上传副本，不修改原模板。</div>
           </section>
           <section class="gaia-advanced-section">
-            <div class="section-heading"><h3>型号映射表</h3><span class="status-chip neutral" id="gaiaMappingStatus">自动读取</span></div>
+            <div class="section-heading"><h3>型号映射表</h3><span class="status-chip neutral" id="gaiaMappingStatus">检查中</span></div>
             <p class="card-intro">使用直播货架货品价格规则数据，只保留明确标注“国行”的标品。同型号的容量、颜色 ID 全部保留并去重。</p>
             <input type="file" id="gaiaMappingFile" accept=".xlsx,.csv" hidden>
             <div class="workflow-actions">
-              <button class="btn" id="gaiaLoadDownloadedMapping" type="button">读取下载目录匹配表</button>
+              <button class="btn" id="gaiaLoadDownloadedMapping" type="button">检查当前映射表</button>
               <button class="btn" id="gaiaChooseMappingFile" type="button">更换映射表</button>
               <button class="btn" id="gaiaUploadMappingBtn" type="button" disabled>单独上传校验</button>
             </div>
-            <div class="selected-file" id="gaiaSelectedMappingFile">自动读取下载目录；不可读取时使用已校验的保存版本，并显示来源。</div>
+            <div class="selected-file" id="gaiaSelectedMappingFile">正在读取面板保存的映射版本</div>
           </section>
         </div>
         <div class="form-stack">
           <label class="field"><span class="field-label">匹配到的标品 ID</span><textarea id="gaiaSkuIds" rows="3" readonly placeholder="自动匹配后回填，无需手动输入"></textarea></label>
           <label class="field"><span class="field-label">每行数量</span><input type="number" id="gaiaCreateCount" value="1" min="1" max="1" readonly></label>
         </div>
-        <p class="gaia-param-note">固定规则：聚合标识 A · 质检链接 1 · 数量 1 · 手机选品策略 D且E且G · 商品规则前缀 a。盖亚成色编码：99新填99，95新填95；型号不明确或校验失败时停止，不猜选。</p>
+        <p class="gaia-param-note">固定规则：聚合标识 A · 质检链接 1 · 数量 1 · 手机选品策略 D且E且G · 商品规则前缀 a。盖亚成色编码：99新填99，95新填95，9新填90，准新机填100。</p>
         <div class="workflow-actions">
           <button class="btn" id="gaiaResolveModelsBtn" type="button">仅匹配型号</button>
           <button class="btn" id="gaiaPreviewBtn" type="button" disabled>仅预览</button>
@@ -169,6 +180,23 @@
           <button class="btn" id="gaiaSubmitBtn" type="button" disabled>上传已生成文件</button>
           <button class="btn" id="gaiaCancelBatchBtn" type="button" hidden disabled>取消未提交批次</button>
         </div>
+        <details class="gaia-details gaia-price-settings">
+          <summary><span>分期导入模板与结果检查</span><i>⌄</i></summary>
+          <div class="section-heading">
+            <p class="card-intro">开始执行后自动关联本批新商品，并导入所选期数。只有需要更换官方模板或排查结果时才使用这里。</p>
+            <span class="status-chip neutral" id="gaiaPriceUpliftStatus">待商品 ID 关联</span>
+          </div>
+          <div class="gaia-price-tools">
+            <label class="field"><span class="field-label">官方导入模板</span><input id="gaiaPriceTemplate" type="file" accept=".xlsx"></label>
+            <div class="workflow-actions">
+              <button class="btn" id="gaiaPriceTemplateUpload" type="button">保存模板</button>
+              <button class="btn" id="gaiaPricePreview" type="button">检查本批商品 ID</button>
+              <button class="btn" id="gaiaPriceDownload" type="button" disabled>下载待导入表</button>
+              <button class="btn" id="gaiaPriceResume" type="button" hidden disabled>仅恢复分期导入</button>
+            </div>
+          </div>
+          <div class="inspect-summary" id="gaiaPriceResult" role="status">开始后自动执行。未核实商品 ID 时不会修改盖亚价格规则。</div>
+        </details>
       </details>
     </fieldset>
   </main>
@@ -323,8 +351,8 @@
 </div>
 
 <script src="/assets/mascot.js"></script>
-<script src="/assets/gaia-execution.js?v=20260924-gaia-stop-2"></script>
-<script src="/assets/gaia-workspace.js?v=20260924-gaia-stop-2"></script>
+<script src="/assets/gaia-execution.js?v=20261012-gaia-full-payment-1"></script>
+<script src="/assets/gaia-workspace.js?v=20261012-gaia-activity-field-1"></script>
 <script src="/assets/panel.js?v=20260924-clean-panel-1"></script>
 </body>
 </html>

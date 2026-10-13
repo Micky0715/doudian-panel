@@ -6,15 +6,27 @@ or unclear feedback requires reconciliation and is never retried here.
 
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 
 from .probe import _screenshot, _emit
 from .upload_form import with_gaia_upload_form
 from .file_attachment import wait_for_attachment
+from .channel_reconcile import snapshot_channel_products, reconcile_channel_products
 
 
 def submit_gaia_batch(*, work_dir, batch_id, shop_id, profile_dir, artifact_dir,
-                      verify_handoff, before_submit, check_cancelled=None):
+                      verify_handoff, before_submit, check_cancelled=None,
+                      auto_price=False, expected_products=None):
+    expected_products = expected_products or []
+
+    def before_create(page, batch):
+        if not auto_price:
+            return None
+        if batch.get("scene") != 2 or not expected_products:
+            raise RuntimeError("自动分期缺少直播货架商品型号清单")
+        return snapshot_channel_products(page, str(shop_id), expected_products)
+
     def confirm_once(page, dialog, confirm, result):
         verify_handoff()
         result["final_attachment_readback"] = wait_for_attachment(
@@ -35,6 +47,7 @@ def submit_gaia_batch(*, work_dir, batch_id, shop_id, profile_dir, artifact_dir,
         baseline = {text.strip() for text in messages.all_inner_texts()}
         # Persist intent BEFORE clicking. A timeout can mean Gaia received it.
         before_submit()
+        submitted_at = datetime.now()
         result["submitted"] = True
         confirm.click(timeout=8000)
         deadline = time.monotonic() + 20
@@ -62,11 +75,35 @@ def submit_gaia_batch(*, work_dir, batch_id, shop_id, profile_dir, artifact_dir,
         if result["outcome"] == "unknown":
             result["feedback"] = "已点击确定，未取得明确受理反馈；请核对盖亚任务，禁止重复提交"
         result["success"] = result["outcome"] == "accepted"
+        if result["success"] and auto_price:
+            # Gaia acknowledges the upload before its channel-product index is
+            # necessarily updated. Poll read-only; never resubmit the workbook.
+            reconcile_deadline = time.monotonic() + 45
+            while True:
+                try:
+                    after = snapshot_channel_products(page, str(shop_id), expected_products)
+                    result["verified_product_ids"] = reconcile_channel_products(
+                        result["before_channel_snapshot"], after,
+                        shop_id=str(shop_id), expected_products=expected_products,
+                        submitted_at=submitted_at, observed_at=datetime.now(),
+                    )
+                    result["price_reconcile_status"] = "verified"
+                    break
+                except Exception as exc:
+                    # Only an empty post-upload result can plausibly be index
+                    # lag. Ambiguity or a changed page contract fails closed.
+                    retryable = "本次新增商品不能唯一确认（0 个）" in str(exc)
+                    if not retryable or time.monotonic() >= reconcile_deadline:
+                        result["price_reconcile_status"] = "blocked"
+                        result["price_reconcile_error"] = str(exc).splitlines()[0][:600]
+                        break
+                    page.wait_for_timeout(3000)
+        result.pop("before_channel_snapshot", None)
         return result
 
     return with_gaia_upload_form(
         work_dir=work_dir, batch_id=batch_id, shop_id=shop_id,
         profile_dir=profile_dir, artifact_dir=artifact_dir, login_wait=120,
         verify_handoff=verify_handoff, on_ready=confirm_once,
-        check_cancelled=check_cancelled,
+        check_cancelled=check_cancelled, before_create=before_create,
     )

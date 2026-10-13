@@ -394,12 +394,14 @@ class FeishuMaterialCatalog:
         for _depth in range(1, self.max_depth + 1):
             folders: list[RemoteDriveEntry] = []
             image_entries: list[RemoteDriveEntry] = []
+            images_by_parent: dict[str, list[RemoteDriveEntry]] = {}
             for token in frontier:
                 for entry in self._entries(token):
                     if entry.entry_type == "folder":
                         folders.append(entry)
                     elif entry.entry_type == "file" and _image_stem(entry.name):
                         image_entries.append(entry)
+                        images_by_parent.setdefault(token, []).append(entry)
 
             # A visible brand directory is stronger identity evidence than a
             # model-like leaf below one of its siblings.  Scope the traversal
@@ -432,17 +434,23 @@ class FeishuMaterialCatalog:
                 tuple(entry.name for entry in folders), brand, model,
                 library="飞书店铺主图目录",
             )
-            file_index, file_evidence = self._select_model_folder(
-                tuple(_image_stem(entry.name) for entry in image_entries),
-                brand, model, library="飞书店铺主图文件",
+            if len(frontier) > 1:
+                matching_branches = [
+                    token for token in frontier
+                    if self._select_main_file(images_by_parent.get(token, ()), brand, model)[0]
+                ]
+                if len(matching_branches) > 1:
+                    raise MaterialPolicyError("飞书店铺主图在多个同品牌目录命中同一型号，拒绝跨目录随机选择")
+            selected_file, file_evidence = self._select_main_file(
+                image_entries, brand, model,
             )
-            if folder_index is not None and file_index is not None:
+            if folder_index is not None and selected_file is not None:
                 raise MaterialPolicyError(
                     "飞书店铺主图同时命中型号文件与型号目录，拒绝猜测: %s" % model
                 )
-            if file_index is not None:
+            if selected_file is not None:
                 return (
-                    (RemoteDriveFile.from_entry(image_entries[file_index]),),
+                    (RemoteDriveFile.from_entry(selected_file),),
                     file_evidence,
                 )
             if folder_index is not None:
@@ -458,6 +466,47 @@ class FeishuMaterialCatalog:
                 return (), ModelFolderEvidence()
             frontier = next_frontier
         return (), ModelFolderEvidence()
+
+    @staticmethod
+    def _pick_main(files: Iterable[RemoteDriveFile]) -> RemoteDriveFile:
+        """Arbitrarily pick one eligible cover, stable across retries and Drive ordering."""
+        candidates = sorted(files, key=lambda item: (item.name.casefold(), item.file_token))
+        if not candidates:
+            raise MaterialPolicyError("没有可用的店铺主图候选")
+        identity = "\n".join(item.file_token for item in candidates).encode("utf-8")
+        index = int.from_bytes(hashlib.sha256(identity).digest()[:8], "big") % len(candidates)
+        return candidates[index]
+
+    def _select_main_file(
+        self, entries: Iterable[RemoteDriveEntry], brand: str, model: str,
+    ) -> tuple[RemoteDriveEntry | None, ModelFolderEvidence]:
+        """Only treat an exact model or its numbered image copies as covers."""
+        files = tuple(entries)
+        expected_literal = _literal_model(model, brand)
+        expected_key = model_key(model)
+        eligible = [
+            entry for entry in files
+            if _image_stem(entry.name)
+            and image_model_leaf_allowed(brand, _image_stem(entry.name))
+        ]
+        for strategy, matches in (
+            ("exact", [entry for entry in eligible
+                       if _literal_model(_image_stem(entry.name), brand) == expected_literal]),
+            ("exact", [entry for entry in eligible
+                       if model_key(_image_stem(entry.name)) == expected_key]),
+            ("numbered_main", [entry for entry in eligible
+                               if (match := re.fullmatch(r"(.+)_([1-9]\d*)", _image_stem(entry.name)))
+                               and model_key(match.group(1)) == expected_key]),
+        ):
+            if matches:
+                selected = self._pick_main(RemoteDriveFile.from_entry(entry) for entry in matches)
+                entry = next(item for item in matches if item.token == selected.file_token)
+                return entry, ModelFolderEvidence(strategy, entry.name)
+        index, evidence = self._select_model_folder(
+            tuple(_image_stem(entry.name) for entry in files),
+            brand, model, library="飞书店铺主图文件",
+        )
+        return (files[index], evidence) if index is not None else (None, evidence)
 
     def _descendant_model_folder(
         self, parent_token: str, brand: str, model: str, *, library: str,
@@ -580,20 +629,15 @@ class FeishuMaterialCatalog:
             model_folder, "主图", library="飞书店铺主图",
         )
         named = self._named_main_files(files)
-        if len(named) > 1:
-            raise MaterialPolicyError("Feishu store main image must be zero or exactly one named 主图.*")
         if named:
-            return named
+            return (self._pick_main(named),)
         if not has_main_child:
             # Legacy flat directory requires the stable 主图.* filename.  It
             # must not mistake a colocated white image for a store main image.
             return ()
         candidates = self._image_files(files)
-        if len(candidates) > 1:
-            raise MaterialPolicyError("飞书店铺主图目录有多张未命名主图，拒绝猜测")
-        # A single image in the explicit 主图 folder is an unambiguous human
-        # maintained main image even when its filename is the model name.
-        return candidates
+        # The explicit 主图 folder is already bound to the selected model.
+        return (self._pick_main(candidates),) if candidates else ()
 
     @staticmethod
     def _entry_files_in_optional_child(
@@ -645,16 +689,13 @@ class FeishuMaterialCatalog:
             )
             main_source, main_has_child = self._entry_files_in_optional_child(all_files, main_path, "主图")
             mains = list(self._named_main_files(main_source))
+            if mains:
+                mains = [self._pick_main(mains)]
             if not mains and main_has_child:
                 candidates = self._image_files(main_source)
-                if len(candidates) > 1:
-                    raise MaterialPolicyError("飞书店铺主图目录有多张未命名主图，拒绝猜测")
-                mains = list(candidates)
+                mains = [self._pick_main(candidates)] if candidates else []
             white_source, _ = self._entry_files_in_optional_child(all_files, white_path, "白底图")
             white_files = list(self._image_files(white_source))
-        if len(mains) > 1:
-            raise MaterialPolicyError("Feishu store main image must be zero or exactly one named 主图.*")
-
         # An existing but invalid main must block. Treating it as absent would
         # silently replace an operator-maintained cover with a white image.
         main = self._download_verified(mains[0], role="主图") if mains else None

@@ -7,7 +7,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 from app.gaia_listing.application.template_generation import build_template_rows
-from app.gaia_listing.domain.mapping_contract import GaiaMappingContractError, ModelMappingRecord
+from app.gaia_listing.domain.mapping_contract import GaiaMappingContractError, ModelMappingRecord, QualityMappingRecord
 from app.gaia_listing.domain.template_contract import GAIA_TEMPLATE_HEADERS
 from app.gaia_listing.infrastructure.model_mapping_import import import_model_mapping
 from app.gaia_listing.infrastructure.quality_mapping_repository import QualityMappingRepository
@@ -121,6 +121,15 @@ class GaiaTemplateGenerationTests(unittest.TestCase):
             [generated.cell(2, column).value for column in range(1, 9)],
             ["2", "A", "1", "sku-400", "quality-99", None, "D且E且G", "a"],
         )
+
+    def test_selected_qualities_expand_each_sku_once_per_quality(self):
+        rows = build_template_rows(
+            scene=2,
+            models=[ModelMappingRecord("荣耀", "400 Pro", "sku-400", "手机")],
+            quality=[QualityMappingRecord("99新", "99"), QualityMappingRecord("95新", "95")],
+        )
+        self.assertEqual([row.values()[3:5] for row in rows],
+                         [("sku-400", "99"), ("sku-400", "95")])
 
     def test_writer_refuses_overwrite_of_template_data(self):
         source = self._template()

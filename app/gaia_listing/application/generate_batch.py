@@ -26,6 +26,8 @@ class PreparedGaiaTemplate:
     quality_id: str
     source_hash: str
     header_row: int
+    quality_labels: tuple[str, ...] = ()
+    quality_ids: tuple[str, ...] = ()
 
     def preview(self, limit: int = 20) -> dict:
         return {
@@ -34,6 +36,8 @@ class PreparedGaiaTemplate:
             "mapping_sha256": self.mapping["sha256"],
             "quality_label": self.quality_label,
             "quality_id": self.quality_id,
+            "quality_labels": list(self.quality_labels or (self.quality_label,)),
+            "quality_ids": list(self.quality_ids or (self.quality_id,)),
             "source_sha256": self.source_hash,
             "columns": list(GAIA_TEMPLATE_HEADERS),
             "rows": [
@@ -55,7 +59,13 @@ def prepare_gaia_template(*, source_path, mapping_version_id, quality_label, sce
     if inspection["status"] != "recognized" or {item["id"] for item in matched} != {"gaia_publish_template"}:
         raise ValueError("文件不是唯一识别的盖亚双维成色发品模板")
     mapping, catalogue = mapping_repository.load_records(mapping_version_id)
-    quality = quality_repository.get_required(quality_label)
+    labels = quality_label if isinstance(quality_label, list) else [quality_label]
+    if not labels or any(not isinstance(label, str) or not label.strip() for label in labels):
+        raise ValueError("请至少选择一种成色")
+    labels = [label.strip() for label in labels]
+    if len(labels) != len(set(labels)):
+        raise ValueError("成色不能重复选择")
+    qualities = [quality_repository.get_required(label) for label in labels]
     if len(catalogue) != mapping.get("record_count"):
         raise ValueError("型号映射版本行数不一致，请重新上传")
     if not isinstance(selected_sku_ids, list):
@@ -65,8 +75,8 @@ def prepare_gaia_template(*, source_path, mapping_version_id, quality_label, sce
         raise ValueError("本次待生成的标品 SKU ID 不能为空")
     if len(requested) != len(set(requested)):
         raise ValueError("本次标品 SKU ID 清单存在重复")
-    if len(requested) > 2000:
-        raise ValueError("单个盖亚文件最多生成 2000 个明确选择的标品 SKU")
+    if len(requested) * len(qualities) > 2000:
+        raise ValueError("单个盖亚文件最多生成 2000 行标品 SKU 与成色组合")
     by_sku = {item.standard_sku_id: item for item in catalogue}
     missing = [value for value in requested if value not in by_sku]
     if missing:
@@ -74,8 +84,9 @@ def prepare_gaia_template(*, source_path, mapping_version_id, quality_label, sce
         raise ValueError("以下标品 SKU ID 不在当前映射版本中：%s%s" % (
             sample, " 等" if len(missing) > 10 else "",
         ))
-    models = [by_sku[value] for value in requested]
-    rows = build_template_rows(scene=scene, models=models, quality=quality)
+    selected_models = [by_sku[value] for value in requested]
+    rows = build_template_rows(scene=scene, models=selected_models, quality=qualities)
+    models = [model for model in selected_models for _ in qualities]
     source_hash = sha256_file(source_path)
     workbook = load_workbook(source_path, read_only=True, data_only=True)
     try:
@@ -90,7 +101,14 @@ def prepare_gaia_template(*, source_path, mapping_version_id, quality_label, sce
         workbook.close()
     if not header_row:
         raise GaiaTemplateWriteError("模板未找到完整 A:H 表头")
-    return PreparedGaiaTemplate(inspection, mapping, models, rows, quality.label, quality.dy_quality_id, source_hash, header_row)
+    quality_labels = tuple(item.label for item in qualities)
+    quality_ids = tuple(item.dy_quality_id for item in qualities)
+    return PreparedGaiaTemplate(
+        inspection, mapping, models, rows,
+        quality_labels[0] if len(quality_labels) == 1 else "、".join(quality_labels),
+        quality_ids[0] if len(quality_ids) == 1 else ",".join(quality_ids),
+        source_hash, header_row, quality_labels, quality_ids,
+    )
 
 
 def _verify_output(path: Path, rows: list) -> None:
@@ -128,6 +146,8 @@ def generate_gaia_batch(*, repository, outputs_dir, shop_id, scene, create_count
     batch.mapping_hash = prepared.mapping["sha256"]
     batch.quality_label = prepared.quality_label
     batch.quality_id = prepared.quality_id
+    batch.quality_labels = list(prepared.quality_labels or (prepared.quality_label,))
+    batch.quality_ids = list(prepared.quality_ids or (prepared.quality_id,))
     output = Path(outputs_dir) / batch.id / "gaia_upload.xlsx"
     temporary = output.with_suffix(".tmp.xlsx")
     try:
@@ -141,7 +161,13 @@ def generate_gaia_batch(*, repository, outputs_dir, shop_id, scene, create_count
         batch.output_path = os.path.realpath(output)
         batch.output_hash = sha256_file(output)
         batch.state = GaiaBatchState.VALIDATION_PASSED.value
-        batch.summary = {"generated_rows": len(prepared.rows), "blocking_errors": 0}
+        products = list(dict.fromkeys((model.brand, model.model) for model in prepared.models))
+        batch.summary = {
+            "generated_rows": len(prepared.rows),
+            "expected_product_count": len(products),
+            "expected_products": [{"brand": brand, "model": model} for brand, model in products],
+            "blocking_errors": 0,
+        }
     except Exception as exc:
         batch.state = GaiaBatchState.VALIDATION_FAILED.value
         batch.errors = [{"code": "template_generation_failed", "message": str(exc)}]

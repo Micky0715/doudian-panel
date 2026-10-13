@@ -16,7 +16,7 @@ class GaiaBatch:
     state: str = GaiaBatchState.SOURCE_SELECTED.value
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    summary: Dict[str, int] = field(default_factory=dict)
+    summary: Dict[str, Any] = field(default_factory=dict)
     errors: List[Dict[str, Any]] = field(default_factory=list)
     output_path: str = ""
     output_hash: str = ""
@@ -24,6 +24,8 @@ class GaiaBatch:
     mapping_hash: str = ""
     quality_label: str = ""
     quality_id: str = ""
+    quality_labels: List[str] = field(default_factory=list)
+    quality_ids: List[str] = field(default_factory=list)
     gaia_receipt: Dict[str, Any] = field(default_factory=dict)
     doudian_draft_ids: List[str] = field(default_factory=list)
     events: List[Dict[str, Any]] = field(default_factory=list)

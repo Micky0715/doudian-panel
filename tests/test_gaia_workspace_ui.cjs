@@ -10,6 +10,19 @@ const scripts = ['gaia-execution.js', 'gaia-workspace.js'].map(name =>
   fs.readFileSync(path.join(root, 'assets', name), 'utf8'));
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('installment choice is part of the main Gaia form; tools stay in advanced settings', () => {
+  const form = html.match(/<fieldset id="gaiaFormFields"[\s\S]*?<\/fieldset>/)?.[0];
+  const advanced = html.match(/<details class="workflow-card gaia-details gaia-advanced"[\s\S]*?<\/details>\s*<\/details>/)?.[0];
+  assert.ok(form);
+  assert.ok(advanced);
+  assert.match(form, /id="gaiaPriceInstallments"/);
+  assert.match(form, /id="gaiaActivityName"/);
+  assert.match(form, /value="full">全款（不处理分期）/);
+  assert.match(advanced, /id="gaiaPriceTemplate"/);
+  assert.match(advanced, /id="gaiaPricePreview"/);
+  assert.doesNotMatch(html, /<section class="workflow-card gaia-price-uplift"/);
+});
+
 async function fixture(override = () => undefined) {
   const elements = {}, handlers = {}, calls = [], timers = [], storage = new Map();
   for (const [, id] of html.matchAll(/id="(gaia[^"]+)"/g)) {
@@ -20,11 +33,18 @@ async function fixture(override = () => undefined) {
   }
   elements['#gaiaShop'].value = '7970406';
   elements['#gaiaScene'].value = '2';
-  elements['#gaiaCondition'].value = '99新';
+  elements['#gaiaPriceInstallments'].value = '12';
+  elements['#gaiaCondition'].selectedValues = ['99新'];
+  elements['#gaiaCondition'].querySelectorAll = () =>
+    elements['#gaiaCondition'].selectedValues.map(value => ({value}));
   elements['#gaiaModels'].value = '苹果,iPhone 17 Pro';
   const mapping = {id: 'a'.repeat(32), name: '价格规则.xlsx', sha256: 'b'.repeat(64),
-    record_count: 2, mainland_filter_applied: true, mapping_policy: 'explicit_mainland_only_v2'};
+    record_count: 2, mainland_filter_applied: true, mapping_policy: 'explicit_mainland_only_v2',
+    uploaded_at: '2026-10-09T00:00:00Z'};
+  const template = {id: 'c'.repeat(32), name: '模板.xlsx', size: 2048,
+    path: '/imports/template.xlsx', uploaded_at: '2026-10-09T00:00:00Z'};
   const preview = {rows: [], row_count: 2, quality_label: '99新', quality_id: '99',
+    quality_labels: ['99新'], quality_ids: ['99'],
     mapping_version_id: mapping.id, source_sha256: 'template-hash'};
   const batch = {id: 'abc123', shop_id: '7970406', output_hash: 'output-hash',
     state: 'validation_passed', summary: {generated_rows: 2}};
@@ -32,8 +52,12 @@ async function fixture(override = () => undefined) {
     execution_key: 'key', phase: 'accepted', message: '盖亚已受理，未启动抖店发布'}};
   const defaults = {
     '/api/gaia/capabilities': {success: true, features: {gaia_submit: true}, contracts: {mapping_policy: 'explicit_mainland_only_v2'}},
-    '/api/gaia/qualities/status': {success: true, qualities: {'99新': {configured: true}}},
+    '/api/gaia/qualities/status': {success: true, qualities: {
+      '99新': {configured: true}, '95新': {configured: true},
+      '9新': {configured: true}, '准新机': {configured: true}}},
     '/api/gaia/model-mappings/latest': {success: true, mapping},
+    '/api/gaia/templates/current': {success: true, template},
+    '/api/gaia/templates': {success: true, template},
     '/api/gaia/excel/latest': {success: true, warnings: [{source: 'downloads', message: 'Permission denied'}], files: [
       {path: '/imports/template.xlsx', name: '模板.xlsx', source_kind: 'managed_template', status: 'recognized', profile_matches: [{id: 'gaia_publish_template'}]},
       {path: '/imports/mapping.xlsx', name: '副本.xlsx', source_kind: 'managed_mapping', status: 'recognized', profile_matches: [{id: 'gaia_goods_price_mapping'}]},
@@ -66,6 +90,8 @@ async function fixture(override = () => undefined) {
   scripts.forEach(script => vm.runInContext(script, context));
   context.window.initGaiaWorkspace({$: key => elements[key], toast() {}});
   await tick();
+  elements['#gaiaActivityName'].value = '【专享】年框商家双11大回馈';
+  elements['#gaiaActivityName'].focus = () => {};
   return {elements, handlers, calls, defaults, timers,
     start: () => handlers['#gaiaStartBtn'].click(),
     count: suffix => calls.filter(call => call.url.endsWith(suffix)).length};
@@ -74,12 +100,16 @@ async function fixture(override = () => undefined) {
 test('one click automatically loads, matches, generates, verifies, starts and polls', async () => {
   const f = await fixture();
   assert.equal(f.count('/start'), 0, 'loading the page must never submit');
+  assert.match(f.elements['#gaiaInputVersions'].textContent, /模板 cccccccc.*映射表 aaaaaaaa/);
   await f.start();
-  assert.equal(f.count('/excel/latest'), 1, 'share one file discovery per run');
+  assert.equal(f.count('/excel/latest'), 0, 'normal workflow must not scan Downloads');
+  assert.equal(f.count('/templates/current'), 2, 'initial display and run both verify the current template');
   for (const endpoint of ['/resolve-batch', '/preview', '/generate', '/start']) assert.equal(f.count(endpoint), 1);
   const request = f.calls.find(call => call.url.endsWith('/generate'));
   assert.deepEqual(JSON.parse(request.options.body).selected_sku_ids, ['sku1', 'sku2']);
-  assert.match(f.elements['#gaiaSelectedMappingFile'].textContent, /使用已保存版本/);
+  assert.deepEqual(JSON.parse(request.options.body).quality_labels, ['99新']);
+  assert.deepEqual(JSON.parse(request.options.body).expected_quality_ids, ['99']);
+  assert.match(f.elements['#gaiaSelectedMappingFile'].textContent, /版本 aaaaaaaa/);
   assert.equal(f.elements['#gaiaGenerationStatus'].textContent, '盖亚已受理');
   assert.match(f.elements['#gaiaUploadStatus'].textContent, /未启动抖店发布/);
   assert.equal(f.elements['#gaiaFormFields'].disabled, false);
@@ -89,6 +119,107 @@ test('one click automatically loads, matches, generates, verifies, starts and po
   assert.match(f.elements['#gaiaStopHint'].textContent, /本地停止不能撤回/);
   await f.start();
   assert.equal(f.count('/start'), 1, 'completed batch cannot be submitted twice');
+});
+
+test('全款一键发品不进入价格规则预检或导入', async () => {
+  const f = await fixture();
+  f.elements['#gaiaPriceInstallments'].value = 'full';
+  f.handlers['#gaiaPriceInstallments'].change();
+  await f.start();
+  const start = f.calls.find(call => call.url.endsWith('/start'));
+  assert.equal(JSON.parse(start.options.body).installments, null);
+  assert.equal(f.count('/price-uplift/preview'), 0);
+  assert.equal(f.count('/price-uplift/download'), 0);
+  assert.equal(f.elements['#gaiaPricePreview'].disabled, true);
+  assert.match(f.elements['#gaiaPriceResult'].textContent, /跳过分期规则导入/);
+});
+
+test('activity name is isolated by shop and term, hidden for full payment', async () => {
+  const f = await fixture();
+  f.handlers['#gaiaShop'].change();
+  assert.equal(f.elements['#gaiaActivityField'].hidden, false);
+  f.elements['#gaiaActivityName'].value = '【专享】年框商家双11大回馈';
+  f.handlers['#gaiaActivityName'].input();
+  f.elements['#gaiaPriceInstallments'].value = '24';
+  f.handlers['#gaiaPriceInstallments'].change();
+  assert.equal(f.elements['#gaiaActivityName'].value, '');
+  f.elements['#gaiaPriceInstallments'].value = '12';
+  f.handlers['#gaiaPriceInstallments'].change();
+  assert.equal(f.elements['#gaiaActivityName'].value, '【专享】年框商家双11大回馈');
+  f.elements['#gaiaPriceInstallments'].value = 'full';
+  f.handlers['#gaiaPriceInstallments'].change();
+  assert.equal(f.elements['#gaiaActivityField'].hidden, true);
+  assert.equal(f.elements['#gaiaActivityName'].disabled, true);
+});
+
+test('failed pre-submit price stage offers price-only recovery without recreating goods', async () => {
+  const productId = '3847478441691709635';
+  const receipt = {execution_key: 'key', phase: 'accepted', submit_intent: true,
+    price_phase: 'failed', price_installments: 12,
+    price_resume_started: true, price_resume_attempts: 1,
+    result: {outcome: 'accepted', verified_product_ids: [productId]}};
+  const failed = {id: 'abc123', shop_id: '7970406', output_hash: 'output-hash',
+    state: 'manual_required', summary: {generated_rows: 2, expected_product_count: 1},
+    doudian_draft_ids: [productId], gaia_receipt: receipt};
+  const recovered = {...failed, state: 'handed_off', gaia_receipt: {...receipt,
+    price_phase: 'accepted', price_resume_started: true}};
+  let resumed = false;
+  const f = await fixture((url) => {
+    if (url.endsWith('/start')) return {success: true, batch: failed};
+    if (url.endsWith('/price-uplift/resume')) {
+      resumed = true;
+      return {success: true, batch: recovered};
+    }
+    if (url.endsWith('/batches/abc123')) return {success: true, batch: resumed ? recovered : failed};
+  });
+  await f.start();
+  assert.equal(f.elements['#gaiaPriceResume'].hidden, false);
+  assert.equal(f.elements['#gaiaPriceResume'].disabled, false);
+  await f.elements['#gaiaPriceResume'].click();
+  assert.equal(f.count('/start'), 1);
+  assert.equal(f.count('/price-uplift/resume'), 1);
+  assert.equal(f.elements['#gaiaPriceResume'].hidden, true);
+});
+
+test('all four configured qualities are sent together and unknown codes block start', async () => {
+  const f = await fixture((url, options, defaults) => {
+    if (url === '/api/gaia/batches/preview' || url === '/api/gaia/batches/generate') {
+      const qualities = JSON.parse(options.body).quality_labels;
+      const preview = {...defaults['/api/gaia/batches/preview'].preview,
+        row_count: 2 * qualities.length, quality_labels: qualities,
+        quality_ids: qualities.map(label => ({'99新': '99', '95新': '95', '9新': '90', '准新机': '100'})[label])};
+      return url.endsWith('/generate')
+        ? {...defaults[url], preview, batch: {...defaults[url].batch,
+          summary: {generated_rows: preview.row_count}}}
+        : {success: true, preview};
+    }
+  });
+  f.elements['#gaiaCondition'].selectedValues = ['99新', '95新', '9新', '准新机'];
+  f.handlers['#gaiaCondition'].change();
+  await f.start();
+  const generated = JSON.parse(f.calls.find(call => call.url.endsWith('/generate')).options.body);
+  assert.deepEqual(generated.quality_labels, ['99新', '95新', '9新', '准新机']);
+  assert.deepEqual(generated.expected_quality_ids, ['99', '95', '90', '100']);
+
+  const blocked = await fixture(url => url === '/api/gaia/qualities/status'
+    ? {success: true, qualities: {'99新': {configured: true}, '9新': {configured: false, message: '9新编码未确认'}}}
+    : undefined);
+  blocked.elements['#gaiaCondition'].selectedValues = ['99新', '9新'];
+  blocked.handlers['#gaiaCondition'].change();
+  assert.equal(blocked.elements['#gaiaStartBtn'].disabled, true);
+  assert.match(blocked.elements['#gaiaGeneratedPreview'].textContent, /9新编码未确认/);
+  assert.equal(blocked.count('/start'), 0);
+});
+
+test('an invalid template update does not replace the managed version or start a run', async () => {
+  const f = await fixture(url => url === '/api/gaia/templates'
+    ? {success: false, message: '模板表头不匹配'} : undefined);
+  f.elements['#gaiaTemplateFile'].files = [{name: 'wrong.xlsx', size: 2048}];
+  await f.handlers['#gaiaTemplateFile'].change();
+  assert.equal(f.count('/templates'), 1);
+  assert.match(f.elements['#gaiaSelectedFile'].textContent, /版本 cccccccc/);
+  assert.equal(f.count('/start'), 0);
+  assert.equal(f.count('/excel/latest'), 0);
 });
 
 test('rapid repeated starts join no duplicate work', async () => {
@@ -105,12 +236,14 @@ test('Stop is outside every disabled fieldset and next to Start', () => {
   assert.match(before.slice(-500), /id="gaiaStartBtn"/);
 });
 
-for (const stage of ['/excel/inspect', '/import-download', '/resolve-batch', '/preview', '/generate', '/handoff-preflight?shop_id=7970406']) {
+for (const stage of ['/templates/current', '/model-mappings/latest', '/resolve-batch', '/preview', '/generate', '/handoff-preflight?shop_id=7970406']) {
   test('Stop during preparation never starts browser: ' + stage, async () => {
-    let release, cancelled, pending = false;
+    let release, cancelled, pending = false, stageCalls = 0;
     const wait = new Promise(resolve => {release = resolve;});
     const f = await fixture(async (url, options, defaults) => {
-      if (url.endsWith(stage)) {pending = true; await wait;}
+      if (url.endsWith(stage) && ++stageCalls === (stage === '/templates/current' || stage === '/model-mappings/latest' ? 2 : 1)) {
+        pending = true; await wait;
+      }
       if (url.endsWith('/stop')) {
         cancelled = {...defaults['/api/gaia/batches/generate'].batch, state: 'cancelled',
           gaia_receipt: {phase: 'stopped', message: '已停止，未提交盖亚'}};
@@ -204,9 +337,12 @@ for (const failure of ['submitted', 'offline']) {
   });
 }
 
-for (const stage of ['/excel/inspect', '/import-download', '/resolve-batch', '/preview', '/generate', '/handoff-preflight?shop_id=7970406']) {
+for (const stage of ['/templates/current', '/model-mappings/latest', '/resolve-batch', '/preview', '/generate', '/handoff-preflight?shop_id=7970406']) {
   test('failure stops before upload and persists its reason: ' + stage, async () => {
-    const f = await fixture(url => url.endsWith(stage) ? {success: false, message: '校验不通过：测试原因'} : undefined);
+    let stageCalls = 0;
+    const f = await fixture(url => url.endsWith(stage)
+      && ++stageCalls === (stage === '/templates/current' || stage === '/model-mappings/latest' ? 2 : 1)
+      ? {success: false, message: '校验不通过：测试原因'} : undefined);
     await f.start();
     assert.equal(f.count('/start'), 0);
     assert.match(f.elements['#gaiaUploadStatus'].textContent, /已停止/);

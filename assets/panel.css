@@ -851,10 +851,20 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(33
 #gaiaView .gaia-quick-start h3{font-size:18px;margin-bottom:6px}
 #gaiaView .gaia-quick-start .card-intro{font-size:13px;margin:0;color:var(--text-sec)}
 #gaiaView .gaia-basic-fields{display:grid;grid-template-columns:2fr 1fr 1fr;gap:18px;margin-top:22px}
+#gaiaView .gaia-quick-start .gaia-basic-fields{grid-template-columns:1.2fr .6fr 1.6fr .65fr}
 #gaiaView .gaia-basic-fields .field{min-width:0}
 #gaiaView .gaia-basic-fields .field-label{font-size:13px}
 #gaiaView .gaia-basic-fields small{font-size:12px;font-weight:400;color:var(--text-dim);margin-left:8px}
-#gaiaView .gaia-basic-fields select,#gaiaView .gaia-basic-fields textarea{width:100%;min-width:0;box-sizing:border-box;font-family:inherit;font-size:14px;line-height:1.6}
+#gaiaView .gaia-basic-fields select,#gaiaView .gaia-basic-fields textarea,#gaiaView .gaia-basic-fields input[type="text"]{width:100%;min-width:0;box-sizing:border-box;font-family:inherit;font-size:14px;line-height:1.6}
+#gaiaView .gaia-activity-field{grid-column:1/-1}
+#gaiaView .gaia-activity-field[hidden]{display:none}
+#gaiaView .gaia-activity-field input{padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)}
+#gaiaView .gaia-activity-field>small{display:block;margin-top:5px;color:var(--text-dim);font-size:12px}
+#gaiaView .gaia-quality-options{display:flex;flex-wrap:wrap;gap:8px;min-height:44px;align-items:center}
+#gaiaView .gaia-quality-options label{display:inline-flex;align-items:center;gap:7px;padding:9px 13px;border:1px solid var(--border);border-radius:10px;background:#fff;color:var(--text);font-size:14px;cursor:pointer;white-space:nowrap}
+#gaiaView .gaia-quality-options label:has(input:checked){border-color:var(--accent);background:#eef8f1;color:var(--accent)}
+#gaiaView .gaia-quality-options input{width:16px;height:16px;margin:0;accent-color:var(--accent)}
+#gaiaView .gaia-quality-options label:has(input:focus-visible){outline:3px solid rgba(33,134,83,.2);outline-offset:2px}
 #gaiaView .gaia-model-field{grid-column:1/-1}
 #gaiaView .gaia-model-field textarea{resize:vertical;min-height:120px;padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2);font-size:14px;line-height:1.7}
 #gaiaView .gaia-run-row{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:20px}
@@ -872,8 +882,19 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(33
 #gaiaView .gaia-advanced>.gaia-grid{margin-top:20px;gap:24px}
 #gaiaView .gaia-advanced-section{min-width:0}
 #gaiaView .selected-file{overflow-wrap:anywhere}
+#gaiaView .gaia-price-settings{margin-top:22px;border-top:1px solid var(--border);padding-top:16px}
+#gaiaView .gaia-price-settings>summary{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--text);font-size:13px;font-weight:600;list-style:none}
+#gaiaView .gaia-price-settings>summary::-webkit-details-marker{display:none}
+#gaiaView .gaia-price-settings>summary i{margin-left:auto;font-style:normal;color:var(--text-dim)}
+#gaiaView .gaia-price-settings[open]>summary i{transform:rotate(180deg)}
+#gaiaView .gaia-price-settings>.section-heading{margin-top:14px}
+#gaiaView .gaia-price-settings .card-intro{margin:0}
+#gaiaView .gaia-price-tools{display:flex;align-items:end;gap:14px;flex-wrap:wrap;margin:12px 0}
+#gaiaView .gaia-price-tools>.field{min-width:min(100%,300px);flex:1}
+#gaiaView .gaia-price-tools .workflow-actions{margin:0}
 @media(max-width:700px){
   #gaiaView .gaia-basic-fields{grid-template-columns:1fr;gap:12px}
+  #gaiaView .gaia-quick-start .gaia-basic-fields{grid-template-columns:1fr}
   #gaiaView .gaia-advanced>summary small{display:block;margin:4px 0 0}
   #gaiaView .gaia-quick-start .section-heading{flex-wrap:wrap}
 }

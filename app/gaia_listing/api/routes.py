@@ -1,6 +1,9 @@
 import os
 import json
+import tempfile
+import shutil
 from pathlib import Path
+from zipfile import BadZipFile
 
 from flask import Blueprint, jsonify, request, send_file
 
@@ -29,7 +32,12 @@ from ..application.model_resolution import (
 )
 from ..infrastructure.quality_mapping_repository import QualityMappingRepository
 from ..infrastructure.template_writer import GaiaTemplateWriteError
+from ..infrastructure.template_repository import TemplateRepository, MAX_TEMPLATE_BYTES
 from ..application.upload_execution import GaiaUploadExecution
+from ..application.price_uplift import PriceUpliftError, prepare_price_uplift
+from ..infrastructure.price_uplift_template import (
+    inspect_price_uplift_template, write_price_uplift_template,
+)
 
 
 def create_gaia_blueprint(work_dir, known_shop_ids=None):
@@ -40,10 +48,12 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
     profiles_path = os.path.join(work_dir, "config", "gaia_excel_profiles.json")
     batches_dir = os.path.join(work_dir, "panel_data", "gaia_listing", "batches")
     outputs_dir = os.path.join(work_dir, "panel_data", "gaia_listing", "outputs")
+    price_dir = Path(work_dir) / "panel_data" / "gaia_listing" / "price_uplift"
     os.makedirs(imports_dir, exist_ok=True)
     os.makedirs(template_imports_dir, exist_ok=True)
     repository = GaiaBatchRepository(batches_dir)
     mapping_repository = ModelMappingRepository(os.path.join(imports_dir, "model_mappings"))
+    template_repository = TemplateRepository(template_imports_dir, profiles_path)
     quality_repository = QualityMappingRepository(os.path.join(work_dir, "config", "gaia_quality_mapping.json"))
     known_shop_ids = {str(value) for value in (known_shop_ids or [])}
 
@@ -69,7 +79,43 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
                 return {"ready": False, "errors": ["价格规则映射尚未执行国行筛选，禁止上传"]}
         return result
 
-    execution = GaiaUploadExecution(work_dir, repository, inspect_upload, upload_enabled)
+    execution = GaiaUploadExecution(
+        work_dir, repository, inspect_upload, upload_enabled,
+        price_template=lambda: current_price_template()[0],
+    )
+
+    def current_price_template():
+        target = price_dir / "template.xlsx"
+        if target.is_file():
+            inspect_price_uplift_template(str(target))
+            return target, "managed"
+        download_root = Path(downloads_dir).expanduser()
+        if not download_root.is_dir():
+            return None, "missing"
+        candidates = sorted(
+            (candidate for candidate in download_root.glob("直播商品价格浮动规则数据模版*.xlsx")
+             if candidate.is_file() and not candidate.is_symlink()),
+            key=lambda candidate: (candidate.stat().st_mtime_ns, candidate.name), reverse=True,
+        )
+        for candidate in candidates:
+            try:
+                if candidate.stat().st_size > 2 * 1024 * 1024:
+                    continue
+                inspect_price_uplift_template(str(candidate))
+                price_dir.mkdir(parents=True, exist_ok=True)
+                fd, temporary = tempfile.mkstemp(prefix="template_", suffix=".xlsx", dir=price_dir)
+                try:
+                    with os.fdopen(fd, "wb") as output, candidate.open("rb") as source:
+                        shutil.copyfileobj(source, output)
+                    inspect_price_uplift_template(temporary)
+                    os.replace(temporary, target)
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+                return target, "downloads"
+            except (PriceUpliftError, BadZipFile, OSError, ValueError):
+                continue
+        return None, "missing"
 
     @bp.get("/capabilities")
     def capabilities():
@@ -80,6 +126,7 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
             "features": {
                 "excel_discovery": True,
                 "excel_inspection": True,
+                "managed_template_upload": True,
                 "model_mapping_upload": True,
                 "model_mapping_download_import": True,
                 "template_generation": True,
@@ -88,6 +135,8 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
                 "gaia_stop": True,
                 "gaia_submit": upload_enabled(),
                 "doudian_handoff": False,
+                "price_uplift_preparation": True,
+                "price_uplift_auto_import": True,
             },
             "contracts": {
                 "mapping_policy": "explicit_mainland_only_v2",
@@ -99,12 +148,12 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
                 "gaia_submit_requires_confirmation": True,
                 "gaia_submit_enabled": upload_enabled(),
             },
-            "message": "填写店铺、成色和手机型号后点击开始，自动匹配、填表、校验并启动盖亚；不会启动抖店发布",
+            "message": "填写店铺、成色、手机型号和分期数后点击开始，自动上传盖亚并将核实的新商品导入对应分期规则；不会启动抖店发布",
         })
 
     @bp.get("/qualities/status")
     def quality_status():
-        labels = ("99新", "95新")
+        labels = ("99新", "95新", "9新", "准新机")
         status = {}
         for label in labels:
             try:
@@ -121,6 +170,27 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
         except (GaiaMappingContractError, OSError) as exc:
             return jsonify({"success": False, "message": str(exc)}), 409
         return jsonify({"success": True, "mapping": mapping})
+
+    @bp.get("/templates/current")
+    def current_template():
+        try:
+            template = template_repository.current()
+        except (ExcelInspectionError, OSError) as exc:
+            return jsonify({"success": False, "message": str(exc)}), 409
+        return jsonify({"success": True, "template": template})
+
+    @bp.post("/templates")
+    def upload_template():
+        upload = request.files.get("file")
+        if upload is None:
+            return jsonify({"success": False, "message": "请选择盖亚发品模板"}), 400
+        if request.content_length and request.content_length > MAX_TEMPLATE_BYTES + 1024 * 1024:
+            return jsonify({"success": False, "message": "发品模板超过 16 MB 限制"}), 413
+        try:
+            template = template_repository.save_upload(upload)
+        except (ExcelInspectionError, OSError) as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        return jsonify({"success": True, "template": template}), 201
 
     @bp.post("/model-mappings")
     def upload_model_mapping():
@@ -285,9 +355,12 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
                 raise ValueError(resolution["message"])
             if selected_sku_ids != resolution["selected_sku_ids"]:
                 raise ValueError("型号和标品 ID 清单不一致，请重新匹配")
+        if "quality_labels" in data and not isinstance(data["quality_labels"], list):
+            raise ValueError("成色必须是多选清单")
         prepared = prepare_gaia_template(
             source_path=path, mapping_version_id=str(data.get("mapping_version_id") or ""),
-            quality_label=str(data.get("quality_label") or ""), scene=data.get("scene", 2),
+            quality_label=(data.get("quality_labels") if "quality_labels" in data
+                           else str(data.get("quality_label") or "")), scene=data.get("scene", 2),
             selected_sku_ids=selected_sku_ids,
             profiles=profiles, mapping_repository=mapping_repository,
             quality_repository=quality_repository,
@@ -309,7 +382,9 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
         try:
             shop_id, source_path, profiles, prepared = _prepared_request(data)
             if (data.get("expected_source_sha256") != prepared.source_hash
-                    or data.get("expected_quality_id") != prepared.quality_id):
+                    or (data.get("expected_quality_ids") != list(prepared.quality_ids)
+                        if "expected_quality_ids" in data
+                        else data.get("expected_quality_id") != prepared.quality_id)):
                 raise ValueError("模板或成色配置在预览后发生变化，请重新预览")
             batch = generate_gaia_batch(
                 repository=repository, outputs_dir=outputs_dir, shop_id=shop_id,
@@ -379,7 +454,9 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
         try:
             batch = execution.start(batch_id, shop_id=shop_id,
                                     expected_hash=data.get("expected_output_hash"),
-                                    confirmed=data.get("confirmed"))
+                                    confirmed=data.get("confirmed"),
+                                    installments=data.get("installments"),
+                                    activity_name=data.get("activity_name"))
         except ValueError as exc:
             return jsonify({"success": False, "message": str(exc)}), 400
         except RuntimeError as exc:
@@ -403,6 +480,25 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
             return jsonify({"success": False, "message": str(exc)}), 409
         return jsonify({"success": True, "batch": batch})
 
+    @bp.post("/batches/<batch_id>/price-uplift/resume")
+    def resume_price_uplift(batch_id):
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data, dict):
+            return jsonify({"success": False, "message": "请求格式无效"}), 400
+        shop_id = str(data.get("shop_id") or "")
+        if not shop_id.isdigit() or (known_shop_ids and shop_id not in known_shop_ids):
+            return jsonify({"success": False, "message": "请选择有效店铺"}), 400
+        try:
+            batch = execution.resume_price_only(
+                batch_id, shop_id=shop_id, expected_hash=data.get("expected_output_hash"),
+                confirmed=data.get("confirmed"),
+            )
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 409
+        return jsonify({"success": True, "batch": batch}), 202
+
     @bp.post("/batches/<batch_id>/cancel")
     def cancel_batch(batch_id):
         data = request.get_json(silent=True) or {}
@@ -421,5 +517,73 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
         if batch is None:
             return jsonify({"success": False, "message": "批次不存在"}), 404
         return jsonify({"success": True, "batch": batch})
+
+    @bp.post("/price-uplift/template")
+    def upload_price_uplift_template():
+        upload = request.files.get("file")
+        if upload is None or not (upload.filename or "").lower().endswith(".xlsx"):
+            return jsonify({"success": False, "message": "请选择官方价格上浮导入模板 .xlsx"}), 400
+        if request.content_length and request.content_length > 2 * 1024 * 1024:
+            return jsonify({"success": False, "message": "模板不能超过 2 MB"}), 413
+        price_dir.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix="template_", suffix=".xlsx", dir=price_dir)
+        try:
+            with os.fdopen(fd, "wb") as destination:
+                upload.save(destination)
+            if os.path.getsize(temporary) > 2 * 1024 * 1024:
+                raise PriceUpliftError("模板不能超过 2 MB")
+            inspect_price_uplift_template(temporary)
+            os.replace(temporary, price_dir / "template.xlsx")
+        except (PriceUpliftError, BadZipFile, OSError, ValueError) as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return jsonify({"success": True, "message": "价格上浮模板已校验保存"}), 201
+
+    @bp.get("/price-uplift/template/current")
+    def current_price_uplift_template():
+        try:
+            template, source = current_price_template()
+        except (PriceUpliftError, BadZipFile, OSError, ValueError) as exc:
+            return jsonify({"success": False, "message": str(exc)}), 409
+        if template is None:
+            return jsonify({"success": False, "message": "未找到有效官方模板，请手动选择上传"}), 404
+        return jsonify({"success": True, "source": source, "name": template.name})
+
+    @bp.post("/batches/<batch_id>/price-uplift/preview")
+    def price_uplift_preview(batch_id):
+        data = request.get_json(silent=True) or {}
+        try:
+            batch = repository.get(batch_id)
+            if batch is None:
+                return jsonify({"success": False, "message": "盖亚批次不存在"}), 404
+            result = prepare_price_uplift(batch, shop_id=str(data.get("shop_id") or ""),
+                                          installments=data.get("installments"))
+            template, _ = current_price_template()
+            if template is None:
+                raise PriceUpliftError("请先上传官方价格上浮导入模板")
+        except (PriceUpliftError, BadZipFile, OSError, ValueError) as exc:
+            return jsonify({"success": False, "message": str(exc)}), 409
+        return jsonify({"success": True, "preview": result})
+
+    @bp.post("/batches/<batch_id>/price-uplift/download")
+    def price_uplift_download(batch_id):
+        data = request.get_json(silent=True) or {}
+        try:
+            batch = repository.get(batch_id)
+            if batch is None:
+                return jsonify({"success": False, "message": "盖亚批次不存在"}), 404
+            result = prepare_price_uplift(batch, shop_id=str(data.get("shop_id") or ""),
+                                          installments=data.get("installments"))
+            template, _ = current_price_template()
+            if template is None:
+                raise PriceUpliftError("请先上传官方价格上浮导入模板")
+            output = price_dir / f"{batch_id}_{result['installments']}.xlsx"
+            write_price_uplift_template(str(template), str(output), result["product_ids"])
+        except (PriceUpliftError, BadZipFile, OSError, ValueError) as exc:
+            return jsonify({"success": False, "message": str(exc)}), 409
+        return send_file(output, as_attachment=True,
+                         download_name=f"price_uplift_{batch_id}_{result['installments']}.xlsx")
 
     return bp

@@ -2,6 +2,8 @@
 window.initGaiaWorkspace = function ({$, toast}) {
   const choose = $('#gaiaChooseFile');
   if (!choose) return;
+  const templatePicker = $('#gaiaTemplateFile');
+  const chooseTemplate = $('#gaiaChooseTemplateFile');
   const mappingPicker = $('#gaiaMappingFile');
   const chooseMapping = $('#gaiaChooseMappingFile');
   const loadDownloadedMapping = $('#gaiaLoadDownloadedMapping');
@@ -15,15 +17,50 @@ window.initGaiaWorkspace = function ({$, toast}) {
   const handoffBtn = $('#gaiaHandoffCheckBtn');
   const cancelBtn = $('#gaiaCancelBatchBtn');
   const downloadLink = $('#gaiaDownloadFile');
+  const priceTemplate = $('#gaiaPriceTemplate');
+  const priceStatus = $('#gaiaPriceUpliftStatus');
+  const priceResult = $('#gaiaPriceResult');
+  const priceDownload = $('#gaiaPriceDownload');
+  const priceResume = $('#gaiaPriceResume');
+  const activityField = $('#gaiaActivityField');
+  const activityName = $('#gaiaActivityName');
+  const activityDraftKey = 'gaia-activity-name-by-shop-term';
+  let activityDrafts = {};
+  try {
+    const stored = JSON.parse(sessionStorage.getItem(activityDraftKey) || '{}');
+    if (stored && typeof stored === 'object' && !Array.isArray(stored)) activityDrafts = stored;
+  } catch (_) {}
+  let activityDraftId = '';
+  function syncActivityField() {
+    const shopId = $('#gaiaShop')?.value || '';
+    const term = $('#gaiaPriceInstallments')?.value || 'full';
+    const applicable = $('#gaiaScene')?.value === '2' && (term === '12' || term === '24');
+    const nextId = applicable && shopId ? shopId + ':' + term : '';
+    if (activityField) activityField.hidden = !applicable;
+    if (activityName) {
+      activityName.disabled = !applicable;
+      if (activityDraftId !== nextId) activityName.value = nextId ? String(activityDrafts[nextId] || '') : '';
+    }
+    activityDraftId = nextId;
+  }
+  activityName?.addEventListener('input', () => {
+    if (!activityDraftId) return;
+    const value = activityName.value.slice(0, 120);
+    if (value.trim()) activityDrafts[activityDraftId] = value;
+    else delete activityDrafts[activityDraftId];
+    try { sessionStorage.setItem(activityDraftKey, JSON.stringify(activityDrafts)); } catch (_) {}
+  });
   let preparing = false;
   let stopRequested = false;
   let preparationStopped = false;
   let mappingChosenManually = false;
   let gaiaSubmitReady = false;
   let mappingError = '';
-  let discovery = null;
   let selectedSourcePath = '';
+  let templateRequestSeq = 0;
   let mappingVersionId = '';
+  let templateVersionLabel = '模板待检查';
+  let mappingVersionLabel = '映射表待检查';
   let previewKey = '';
   let previewMeta = null;
   let generatedBatchId = '';
@@ -31,6 +68,81 @@ window.initGaiaWorkspace = function ({$, toast}) {
   let gaiaBackendReady = false;
   let safeMainlandMappingReady = false;
   let matchedModelSignature = '';
+  let pricePreparedKey = '';
+  function selectedQualities() {
+    return Array.from(condition?.querySelectorAll('input[type="checkbox"]:checked') || [], input => input.value);
+  }
+  function pricePayload() {
+    return {shop_id: $('#gaiaShop')?.value || '',
+      installments: $('#gaiaPriceInstallments')?.value === 'full'
+        ? null : Number($('#gaiaPriceInstallments')?.value || 12)};
+  }
+  function showPriceError(message) {
+    pricePreparedKey = '';
+    priceDownload.disabled = true;
+    priceStatus.textContent = '待核实';
+    priceStatus.className = 'status-chip neutral';
+    priceResult.textContent = message;
+  }
+  $('#gaiaPriceTemplateUpload')?.addEventListener('click', async () => {
+    const file = priceTemplate?.files?.[0];
+    if (!file) return showPriceError('请先选择盖亚价格上浮官方导入模板。');
+    const form = new FormData();
+    form.append('file', file);
+    const response = await fetch('/api/gaia/price-uplift/template', {method: 'POST', body: form})
+      .then(r => r.json()).catch(() => ({success: false, message: '模板上传失败'}));
+    if (!response.success) return showPriceError(response.message);
+    priceResult.textContent = response.message + '；下一步检查本批商品 ID。';
+  });
+  fetch('/api/gaia/price-uplift/template/current').then(r => r.json()).then(response => {
+    if (response.success) {
+      priceResult.textContent = '已找到有效官方导入模板。点击“开始执行”后会自动关联本批商品并导入所选期数。';
+    } else {
+      priceResult.textContent = response.message || '请先上传官方导入模板。';
+    }
+  }).catch(() => {});
+  $('#gaiaPricePreview')?.addEventListener('click', async () => {
+    if (pricePayload().installments === null) return showPriceError('已选择全款，无需检查或导入分期规则。');
+    if (!generatedBatchId) return showPriceError('本次页面尚无盖亚批次，请先完成盖亚发品。');
+    const payload = pricePayload();
+    const response = await fetch('/api/gaia/batches/' + generatedBatchId + '/price-uplift/preview', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+    }).then(r => r.json()).catch(() => ({success: false, message: '价格上浮预检失败'}));
+    if (!response.success) return showPriceError(response.message);
+    pricePreparedKey = JSON.stringify({batch_id: generatedBatchId, ...payload});
+    priceDownload.disabled = false;
+    priceStatus.textContent = '可生成';
+    priceStatus.className = 'status-chip ready';
+    priceResult.textContent = '已核实 ' + response.preview.count + ' 个抖店商品 ID；目标店铺 '
+      + payload.shop_id + '，规则“' + response.preview.rule_name + '”。“开始执行”会自动导入；也可下载核对。';
+  });
+  $('#gaiaPriceInstallments')?.addEventListener('change', () => {
+    showPriceError(pricePayload().installments === null
+      ? '已选择全款：照常执行盖亚发品，跳过分期规则导入。'
+      : '分期数已变更，请重新检查本批商品 ID。');
+    $('#gaiaPricePreview').disabled = pricePayload().installments === null;
+    refreshGaiaReadiness();
+  });
+  priceDownload?.addEventListener('click', async () => {
+    const payload = pricePayload();
+    if (payload.installments === null) return showPriceError('全款无需生成分期导入表。');
+    if (pricePreparedKey !== JSON.stringify({batch_id: generatedBatchId, ...payload})) {
+      return showPriceError('店铺、期数或批次已变化，请重新检查。');
+    }
+    const response = await fetch('/api/gaia/batches/' + generatedBatchId + '/price-uplift/download', {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      return showPriceError(error.message || '导入文件生成失败');
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'price_uplift_' + generatedBatchId + '_' + payload.installments + '.xlsx';
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
   const uploadController = window.createGaiaUploadController({onChange: ({batch, busy, stopStatus}) => {
     if (batch?.gaia_receipt?.execution_key && !generatedBatchId) {
       generatedBatchId = batch.id;
@@ -44,10 +156,69 @@ window.initGaiaWorkspace = function ({$, toast}) {
         : busy ? '盖亚处理中' : accepted ? '盖亚已受理' : '请查看执行结果';
       status.className = 'status-chip ' + (busy || batch.state === 'cancelled' ? 'neutral' : accepted ? 'ready' : 'error');
     }
+    const pricePhase = batch?.gaia_receipt?.price_phase;
+    if (priceResume) {
+      const receipt = batch?.gaia_receipt || {};
+      const verified = receipt.result?.verified_product_ids;
+      const resumeAttempts = Number(receipt.price_resume_attempts || (receipt.price_resume_started ? 1 : 0));
+      const recoverable = batch?.state === 'manual_required' && receipt.phase === 'accepted'
+        && pricePhase === 'failed' && receipt.submit_intent === true
+        && !receipt.price_submit_intent && resumeAttempts < 2
+        && Array.isArray(verified) && verified.length > 0
+        && JSON.stringify(verified) === JSON.stringify(batch.doudian_draft_ids)
+        && verified.length === batch.summary?.expected_product_count;
+      priceResume.hidden = !recoverable;
+      priceResume.disabled = !recoverable || busy;
+    }
+    if (pricePhase && pricePhase !== 'not_requested') {
+      const labels = {waiting_gaia: '等待盖亚', ids_verified: '已核实商品',
+        submitting: '导入中', accepted: '导入成功', id_blocked: '商品关联失败',
+        rejected: '导入失败', unknown: '结果待核对', failed: '导入未完成'};
+      priceStatus.textContent = labels[pricePhase] || pricePhase;
+      priceStatus.className = 'status-chip ' + (pricePhase === 'accepted' ? 'ready'
+        : ['id_blocked', 'rejected', 'unknown', 'failed'].includes(pricePhase) ? 'error' : 'neutral');
+      priceResult.textContent = batch.gaia_receipt.message || priceResult.textContent;
+    }
+    const activityPhase = batch?.gaia_receipt?.activity_phase;
+    if (activityPhase && activityPhase !== 'not_requested') {
+      const labels = {waiting_price: '等待价格导入', preparing: '核对活动中', submitting: '活动提交中',
+        verified: '报名已核实', submitted_unverified: '提交待核对',
+        failed: '提交前停止', unknown: '结果待核对', blocked: '条件不符'};
+      priceResult.textContent = (batch.gaia_receipt.message || '')
+        + '；分期免息活动：' + (labels[activityPhase] || activityPhase);
+    }
     refreshGaiaBackendControls();
   }});
+  priceResume?.addEventListener('click', async () => {
+    if (priceResume.disabled || !generatedBatchId) return;
+    priceResume.disabled = true;
+    priceResult.textContent = '正在恢复已创建商品的分期导入；不会重新上传盖亚发品表。';
+    const batch = await fetch('/api/gaia/batches/' + generatedBatchId)
+      .then(r => r.json()).then(v => v.batch).catch(() => null);
+    if (!batch?.output_hash) {
+      priceResult.textContent = '无法回读原批次，未启动分期恢复。';
+      await uploadController.refresh();
+      return;
+    }
+    const response = await fetch('/api/gaia/batches/' + generatedBatchId + '/price-uplift/resume', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({shop_id: batch.shop_id, expected_output_hash: batch.output_hash, confirmed: true})
+    }).then(r => r.json()).catch(() => ({success: false, message: '恢复请求状态待核对'}));
+    if (!response.success) priceResult.textContent = response.message || '分期恢复未启动';
+    await uploadController.refresh();
+  });
   if (loadDownloadedMapping) loadDownloadedMapping.disabled = true;
   if (uploadMapping) uploadMapping.disabled = true;
+
+  function showInputVersions() {
+    const output = $('#gaiaInputVersions');
+    if (output) output.textContent = templateVersionLabel + '；' + mappingVersionLabel;
+  }
+
+  function versionTime(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '时间未知' : date.toLocaleString('zh-CN');
+  }
 
   function refreshGaiaBackendControls() {
     const advanced = $('#gaiaAdvancedFields');
@@ -73,7 +244,8 @@ window.initGaiaWorkspace = function ({$, toast}) {
     if (startBtn) {
       const busy = uploadController.isBusy();
       const processed = Boolean(generatedBatchId) && !uploadController.canStart();
-      startBtn.disabled = preparing || busy || processed || !gaiaBackendReady || !gaiaSubmitReady;
+      const missingQualityId = selectedQualities().some(label => qualityStatus[label]?.configured === false);
+      startBtn.disabled = preparing || busy || processed || missingQualityId || !gaiaBackendReady || !gaiaSubmitReady;
       startBtn.textContent = preparing ? '正在处理…' : busy ? '盖亚处理中…'
         : processed ? '请查看本批结果' : '开始执行';
     }
@@ -193,10 +365,13 @@ window.initGaiaWorkspace = function ({$, toast}) {
     $('#gaiaMappingStatus').textContent = '已校验 · ' + mapping.record_count + ' 个国行标品 SKU' + filterText;
     $('#gaiaMappingStatus').className = 'status-chip ready';
     $('#gaiaSelectedMappingFile').textContent = mapping.name + ' · 版本 ' + mapping.id.slice(0, 8)
+      + ' · 更新于 ' + versionTime(mapping.uploaded_at)
       + ' · SHA-256 ' + mapping.sha256.slice(0, 12)
       + (mapping.mainland_filter_applied
         ? ' · 非国行行数 ' + Number(mapping.excluded_non_mainland_rows || 0)
         : '');
+    mappingVersionLabel = '映射表 ' + mapping.id.slice(0, 8) + '（' + mapping.name + '，' + versionTime(mapping.uploaded_at) + '）';
+    showInputVersions();
     refreshGaiaReadiness();
     refreshGaiaBackendControls();
   }
@@ -210,7 +385,7 @@ window.initGaiaWorkspace = function ({$, toast}) {
       models: operatorModelRows(),
       shop_id: $('#gaiaShop')?.value || '',
       scene: $('#gaiaScene')?.value || '2',
-      quality_label: condition?.value || '',
+      quality_labels: selectedQualities(),
       create_count: 1
     };
   }
@@ -218,21 +393,26 @@ window.initGaiaWorkspace = function ({$, toast}) {
   function showPreview(preview) {
     const lines = (preview.rows || []).map(row =>
       '第 ' + row.excel_row + ' 行  ' + row.brand + ' ' + row.model
-      + '  ·  标品 ' + row.values[3] + '  ·  策略 ' + (row.values[6] || '留空'));
+      + '  ·  标品 ' + row.values[3] + '  ·  成色 ID ' + row.values[4]
+      + '  ·  策略 ' + (row.values[6] || '留空'));
     $('#gaiaGeneratedPreview').textContent =
-      '共 ' + preview.row_count + ' 行 · 成色 ' + preview.quality_label
-      + '（ID ' + preview.quality_id + '）· 映射版本 ' + preview.mapping_version_id.slice(0, 8)
+      '共 ' + preview.row_count + ' 行 · 成色 ' + (preview.quality_labels || [preview.quality_label]).join('、')
+      + '（ID ' + (preview.quality_ids || [preview.quality_id]).join('、') + '）· 映射版本 ' + preview.mapping_version_id.slice(0, 8)
       + '\n' + lines.join('\n') + (preview.truncated ? '\n仅展示前 20 行；下载文件包含全部行。' : '');
   }
 
   function refreshGaiaReadiness() {
+    syncActivityField();
+    const installment = $('#gaiaPriceInstallments');
+    if (installment) installment.disabled = $('#gaiaScene')?.value === '1';
     const sourceReady = Boolean(selectedSourcePath);
     const mappingReady = Boolean(mappingVersionId);
-    const conditionSelected = Boolean(condition?.value);
+    const qualities = selectedQualities();
+    const conditionSelected = qualities.length > 0;
     const skuSelected = generationPayload().selected_sku_ids.length > 0;
     const modelRows = operatorModelRows();
     const modelsMatched = modelRows.length > 0 && matchedModelSignature === currentModelSignature();
-    const unavailableQuality = conditionSelected && qualityStatus[condition.value]?.configured === false;
+    const unavailableQuality = qualities.find(label => qualityStatus[label]?.configured === false);
     const shopSelected = Boolean($('#gaiaShop')?.value);
     const ready = sourceReady && mappingReady && conditionSelected && skuSelected
       && modelsMatched && shopSelected;
@@ -257,7 +437,7 @@ window.initGaiaWorkspace = function ({$, toast}) {
     if (unavailableQuality) {
       status.textContent = '成色 ID 未配置 · 禁止生成';
       status.className = 'status-chip error';
-      $('#gaiaGeneratedPreview').textContent = qualityStatus[condition.value].message;
+      $('#gaiaGeneratedPreview').textContent = qualityStatus[unavailableQuality].message;
     } else if (generatedBatchId) {
       status.textContent = uploadController.isBusy() ? '盖亚处理中' : '文件已生成';
       status.className = 'status-chip ready';
@@ -281,7 +461,7 @@ window.initGaiaWorkspace = function ({$, toast}) {
     refreshGaiaReadiness();
   });
 
-  async function inspectServerPath(path, name, size) {
+  async function inspectServerPath(path, name, size, requestId) {
     const status = $('#gaiaSourceStatus');
     const summary = $('#gaiaInspectSummary');
     status.textContent = '正在识别';
@@ -290,6 +470,7 @@ window.initGaiaWorkspace = function ({$, toast}) {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({path: path})
     }).then(r => r.json()).catch(() => ({success: false, message: '请求失败'}));
+    if (requestId !== templateRequestSeq) return false;
     if (!res.success) {
       selectedSourcePath = '';
       status.textContent = '识别失败'; status.className = 'status-chip error';
@@ -312,35 +493,58 @@ window.initGaiaWorkspace = function ({$, toast}) {
   }
 
   async function selectLatestTemplate() {
-    choose.disabled = true; choose.textContent = '正在查找…';
-    const res = discovery || await fetch('/api/gaia/excel/latest').then(r => r.json())
-      .catch(() => ({success: false, message:'请求失败'}));
-    if (preparing) discovery = res;
-    choose.disabled = false; choose.textContent = '检查最新模板';
-    const templates = (res.files || []).filter(item => item.status === 'recognized'
-      && (item.profile_matches || []).some(match => match.id === 'gaia_publish_template'));
-    let candidate = templates.find(item => item.source_kind === 'downloads') || templates[0];
-    if (!candidate) {
-      // macOS LaunchAgent 可能被 TCC 拒绝读取 ~/Downloads。已验证模板保存在
-      // 应用受控目录；旧版后端也允许检查 imports 下的路径。
-      candidate = {
-        path: 'panel_data/gaia_listing/imports/templates/抖音双维成色发品模版20260909165746.xlsx',
-        name: '抖音双维成色发品模版20260909165746.xlsx',
-        size: 9933
-      };
+    const requestId = ++templateRequestSeq;
+    choose.disabled = true; choose.textContent = '正在检查…';
+    const res = await fetch('/api/gaia/templates/current').then(r => r.json())
+      .catch(() => ({success: false, message: '读取模板版本失败'}));
+    if (requestId !== templateRequestSeq) return false;
+    choose.disabled = false; choose.textContent = '检查当前模板';
+    if (!res.success || !res.template) {
+      selectedSourcePath = '';
+      $('#gaiaSourceStatus').textContent = '缺少模板';
+      $('#gaiaSourceStatus').className = 'status-chip error';
+      $('#gaiaSelectedFile').textContent = res.message || '尚未保存有效模板，请在高级设置上传';
+      templateVersionLabel = '模板未就绪';
+      showInputVersions();
+      refreshGaiaReadiness();
+      return false;
     }
-    const valid = await inspectServerPath(candidate.path, candidate.name, candidate.size);
-    if (valid && candidate.source_kind !== 'downloads') {
-      $('#gaiaSelectedFile').textContent += ' · 使用已保存模板（未读取到下载目录中的模板）';
+    const template = res.template;
+    const valid = await inspectServerPath(template.path, template.name, template.size, requestId);
+    if (valid) {
+      $('#gaiaSelectedFile').textContent = template.name + ' · 版本 '
+        + template.id.slice(0, 8) + ' · 更新于 ' + versionTime(template.uploaded_at);
+      templateVersionLabel = '模板 ' + template.id.slice(0, 8) + '（' + template.name + '，' + versionTime(template.uploaded_at) + '）';
+      showInputVersions();
     }
     return valid;
   }
   choose.addEventListener('click', selectLatestTemplate);
+  chooseTemplate?.addEventListener('click', () => templatePicker?.click());
+  templatePicker?.addEventListener('change', async () => {
+    const file = templatePicker.files?.[0];
+    if (!file) return;
+    const form = new FormData();
+    form.append('file', file);
+    chooseTemplate.disabled = true;
+    $('#gaiaSourceStatus').textContent = '正在上传校验';
+    const res = await fetch('/api/gaia/templates', {method: 'POST', body: form})
+      .then(r => r.json()).catch(() => ({success: false, message: '模板上传失败'}));
+    chooseTemplate.disabled = false;
+    templatePicker.value = '';
+    if (!res.success) {
+      toast(res.message || '模板未通过校验，保留上一版本', true);
+      await selectLatestTemplate();
+      return;
+    }
+    await selectLatestTemplate();
+    toast('发品模板已校验并保存为当前版本');
+  });
 
   if (condition) {
     condition.addEventListener('change', () => {
-      if (condition.value) {
-        toast('已选择“' + condition.value + '”。预览时会校验准确的 dyQualityId。');
+      if (selectedQualities().length) {
+        toast('已选择“' + selectedQualities().join('、') + '”。预览时会校验每种成色的准确 ID。');
       }
       refreshGaiaReadiness();
     });
@@ -378,61 +582,40 @@ window.initGaiaWorkspace = function ({$, toast}) {
     });
   }
   if (loadDownloadedMapping) {
-    async function importLatestDownloadedMapping() {
+    async function loadCurrentMapping() {
       if (!gaiaBackendReady) {
         toast('盖亚后端尚未加载国行筛选合同，暂停导入', true);
         return false;
       }
       const status = $('#gaiaMappingStatus');
       loadDownloadedMapping.disabled = true;
-      loadDownloadedMapping.textContent = '正在查找…';
-      status.textContent = '正在识别下载目录';
+      loadDownloadedMapping.textContent = '正在检查…';
+      status.textContent = '正在读取当前版本';
       status.className = 'status-chip neutral';
       mappingError = '';
-      const latest = discovery || await fetch('/api/gaia/excel/latest').then(r => r.json())
-        .catch(() => ({success: false, message: '读取下载目录失败'}));
-      const mappings = (latest.files || []).filter(item => item.status === 'recognized'
-        && (item.profile_matches || []).some(match => match.id === 'gaia_goods_price_mapping'));
-      const candidate = mappings.find(item => item.source_kind === 'downloads') || mappings[0];
-      if (!latest.success || !candidate) {
-        status.textContent = '未找到匹配表';
-        status.className = 'status-chip error';
-        loadDownloadedMapping.disabled = false;
-        loadDownloadedMapping.textContent = '读取下载目录匹配表';
-        mappingError = latest.message || '没有可用的价格规则映射表，请在高级设置上传原表';
-        $('#gaiaSelectedMappingFile').textContent = mappingError;
-        toast(mappingError, true);
-        return false;
-      }
-      status.textContent = '正在读取并校验大表';
-      const res = await fetch('/api/gaia/model-mappings/import-download', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({path: candidate.path})
-      }).then(r => r.json()).catch(() => ({success: false, message: '导入请求失败'}));
+      const res = await fetch('/api/gaia/model-mappings/latest').then(r => r.json())
+        .catch(() => ({success: false, message: '读取映射版本失败'}));
       loadDownloadedMapping.disabled = false;
-      loadDownloadedMapping.textContent = '读取下载目录匹配表';
-      if (!res.success) {
+      loadDownloadedMapping.textContent = '检查当前映射表';
+      if (!res.success || !res.mapping || !res.mapping.mainland_filter_applied
+          || res.mapping.mapping_policy !== 'explicit_mainland_only_v2') {
         mappingVersionId = '';
         safeMainlandMappingReady = false;
-        status.textContent = '校验未通过';
+        status.textContent = '缺少有效映射';
         status.className = 'status-chip error';
-        mappingError = res.message || '匹配表导入失败';
+        mappingError = res.message || '没有可用的国行价格规则映射表，请在高级设置上传原表';
         $('#gaiaSelectedMappingFile').textContent = mappingError;
-        toast(mappingError, true);
+        mappingVersionLabel = '映射表未就绪';
+        showInputVersions();
         refreshGaiaReadiness();
-        refreshGaiaBackendControls();
         return false;
       }
       applyMappingVersion(res.mapping);
       mappingChosenManually = false;
       if (mappingPicker) mappingPicker.value = '';
-      if (res.reused) {
-        $('#gaiaSelectedMappingFile').textContent += ' · 使用已保存版本（未读取到下载目录中的价格表；有更新请手动上传）';
-        $('#gaiaMappingStatus').textContent = '已校验 · 复用保存版本';
-      }
       return true;
     }
-    loadDownloadedMapping.addEventListener('click', importLatestDownloadedMapping);
+    loadDownloadedMapping.addEventListener('click', loadCurrentMapping);
 
     if (startBtn) {
       startBtn.addEventListener('click', async () => {
@@ -443,9 +626,21 @@ window.initGaiaWorkspace = function ({$, toast}) {
           return;
         }
         const payloadBeforeFiles = generationPayload();
-        if (!payloadBeforeFiles.shop_id || !payloadBeforeFiles.quality_label
+        if (!payloadBeforeFiles.shop_id || !payloadBeforeFiles.quality_labels.length
             || !operatorModelRows().length) {
           toast('请先选择目标店铺、成色，并填写手机型号', true);
+          return;
+        }
+        const needsActivity = $('#gaiaScene')?.value === '2'
+          && ['12', '24'].includes($('#gaiaPriceInstallments')?.value);
+        if (needsActivity && !activityName?.value?.trim()) {
+          toast('选择分期时，请填写抖店活动卡片的完整名称', true);
+          activityName?.focus();
+          return;
+        }
+        if (needsActivity && activityName.value.includes('全店报名')) {
+          toast('仅支持单品/部分商品活动，不能选择全店报名', true);
+          activityName.focus();
           return;
         }
         startBtn.disabled = true;
@@ -453,7 +648,6 @@ window.initGaiaWorkspace = function ({$, toast}) {
         stopRequested = false;
         preparationStopped = false;
         refreshGaiaBackendControls();
-        discovery = null;
         $('#gaiaFormFields').disabled = true;
         let preparationError = '';
         startBtn.textContent = '正在处理…';
@@ -468,13 +662,13 @@ window.initGaiaWorkspace = function ({$, toast}) {
           // A pre-submit failure retries the same verified batch, never regenerates it.
           if (!generatedBatchId) {
           step('1/6 读取发品模板');
-          if (!await selectLatestTemplate()) throw new Error($('#gaiaInspectSummary').textContent || '盖亚空模板识别失败');
+          if (!await selectLatestTemplate()) throw new Error($('#gaiaSelectedFile').textContent || '盖亚空模板识别失败');
 
           step('2/6 读取国行映射表');
           if (mappingChosenManually && !safeMainlandMappingReady && mappingPicker?.files?.length) {
             if (!await uploadSelectedMapping()) throw new Error(mappingError || '所选映射表校验失败');
           } else if (!mappingChosenManually) {
-            if (!await importLatestDownloadedMapping()) throw new Error(mappingError || '直播货架价格规则映射失败');
+            if (!await loadCurrentMapping()) throw new Error(mappingError || '直播货架价格规则映射失败');
           } else if (!safeMainlandMappingReady) {
             throw new Error('已保存映射版本未通过国行筛选');
           }
@@ -502,7 +696,7 @@ window.initGaiaWorkspace = function ({$, toast}) {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({...payload,
               expected_source_sha256: previewMeta.source_sha256,
-              expected_quality_id: previewMeta.quality_id})
+              expected_quality_ids: previewMeta.quality_ids})
           }).then(r => r.json()).catch(() => ({success: false, message: '生成请求失败'}));
           if (!generated.success) throw new Error(generated.message || '生成失败');
           generatedBatchId = generated.batch.id;
@@ -557,7 +751,6 @@ window.initGaiaWorkspace = function ({$, toast}) {
           toast(error?.message || '盖亚任务处理失败', true);
         } finally {
           preparing = false;
-          discovery = null;
           $('#gaiaFormFields').disabled = uploadController.isBusy();
           refreshGaiaBackendControls();
           if (preparationError) {
@@ -605,16 +798,25 @@ window.initGaiaWorkspace = function ({$, toast}) {
       return Boolean(res.success);
   }
   uploadMapping?.addEventListener('click', uploadSelectedMapping);
+  selectLatestTemplate().catch(() => {});
   fetch('/api/gaia/model-mappings/latest').then(r => r.json()).then(res => {
     if (preparing || mappingVersionId || mappingChosenManually) return;
     if (!res.success) {
       $('#gaiaMappingStatus').textContent = '版本校验失败';
       $('#gaiaMappingStatus').className = 'status-chip error';
       $('#gaiaSelectedMappingFile').textContent = res.message || '已保存的映射版本不可用，请重新上传';
+      mappingVersionLabel = '映射表未就绪';
+      showInputVersions();
       refreshGaiaReadiness();
       return;
     }
-    if (!res.mapping || mappingPicker?.files?.length) return;
+    if (!res.mapping) {
+      mappingVersionLabel = '映射表未就绪';
+      showInputVersions();
+      $('#gaiaSelectedMappingFile').textContent = '尚未保存有效映射表，请在高级设置上传';
+      return;
+    }
+    if (mappingPicker?.files?.length) return;
     const mapping = res.mapping;
     if (/\u6296\u97f3\u76f4\u64ad\u8d27\u67b6\u8d27\u54c1\u4ef7\u683c\u89c4\u5219\u6570\u636e/.test(mapping.name || '')
         && !mapping.mainland_filter_applied) {
@@ -622,7 +824,9 @@ window.initGaiaWorkspace = function ({$, toast}) {
       safeMainlandMappingReady = false;
       $('#gaiaMappingStatus').textContent = '需重新导入 · 尚未执行国行筛选';
       $('#gaiaMappingStatus').className = 'status-chip error';
-      $('#gaiaSelectedMappingFile').textContent = mapping.name + ' · 点击“开始”或“读取下载目录匹配表”重建映射';
+      $('#gaiaSelectedMappingFile').textContent = mapping.name + ' · 请上传新版国行价格规则原表';
+      mappingVersionLabel = '映射表未就绪';
+      showInputVersions();
       refreshGaiaReadiness();
       refreshGaiaBackendControls();
       return;
@@ -688,7 +892,7 @@ window.initGaiaWorkspace = function ({$, toast}) {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({...payload,
         expected_source_sha256: previewMeta.source_sha256,
-        expected_quality_id: previewMeta.quality_id})
+        expected_quality_ids: previewMeta.quality_ids})
     }).then(r => r.json()).catch(() => ({success: false, message: '生成请求失败'}));
     if (!res.success) {
       previewKey = '';

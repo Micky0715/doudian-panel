@@ -4,10 +4,13 @@ import copy
 import unittest
 from unittest.mock import Mock, patch
 
+from playwright.sync_api import sync_playwright
+
 from integrations.gaia_browser.file_attachment import (
     FileAttachmentError, assess_attachment, wait_for_attachment,
 )
 from integrations.gaia_browser.submit import submit_gaia_batch
+from integrations.gaia_browser.upload_form import _scroll_shop_dropdown
 from integrations.gaia_browser.upload_preflight import preflight_gaia_upload
 
 
@@ -44,6 +47,21 @@ class FakeDialog:
 
 
 class GaiaFileAttachmentTests(unittest.TestCase):
+    def test_shop_virtual_list_scrolls_even_with_hidden_overflow(self):
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(headless=True)
+            try:
+                page = browser.new_page()
+                page.set_content('''<div id="dropdown"><div class="rc-virtual-list-holder"
+                    style="height:100px;overflow-y:hidden"><div style="height:400px"></div>
+                    </div></div>''')
+                position = _scroll_shop_dropdown(page.locator('#dropdown'))
+                self.assertEqual(0, position['before'])
+                self.assertGreater(position['after'], 0)
+                self.assertGreater(position['max'], position['after'])
+            finally:
+                browser.close()
+
     def check(self, data, **kwargs):
         return assess_attachment(data, expected_name=NAME, expected_size=SIZE, **kwargs)
 

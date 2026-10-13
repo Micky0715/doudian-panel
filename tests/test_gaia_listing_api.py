@@ -17,6 +17,56 @@ from app.gaia_listing.infrastructure.batch_repository import GaiaBatchRepository
 
 
 class GaiaListingApiTests(unittest.TestCase):
+    def test_managed_template_upload_validation_versioning_and_legacy_migration(self):
+        with tempfile.TemporaryDirectory() as root:
+            root_path = Path(root)
+            config = root_path / 'config'
+            config.mkdir()
+            project = Path(__file__).resolve().parents[1]
+            for name in ('gaia_excel_profiles.json', 'gaia_quality_mapping.json'):
+                (config / name).write_bytes((project / 'config' / name).read_bytes())
+            legacy_dir = root_path / 'panel_data/gaia_listing/imports/templates'
+            legacy_dir.mkdir(parents=True)
+            valid = Workbook()
+            valid.active.append(list(GAIA_TEMPLATE_HEADERS))
+            legacy = legacy_dir / 'old-template.xlsx'
+            valid.save(legacy)
+            legacy_bytes = legacy.read_bytes()
+            app = Flask('gaia_managed_template_test')
+            app.register_blueprint(create_gaia_blueprint(root))
+            client = app.test_client()
+
+            migrated = client.get('/api/gaia/templates/current').get_json()['template']
+            self.assertEqual('legacy_managed', migrated['source_kind'])
+            self.assertEqual('old-template.xlsx', migrated['name'])
+            self.assertEqual(legacy_bytes, legacy.read_bytes())
+            self.assertEqual(migrated, client.get('/api/gaia/templates/current').get_json()['template'])
+
+            wrong = Workbook()
+            wrong.active.append(['wrong', 'headers'])
+            wrong_stream = io.BytesIO()
+            wrong.save(wrong_stream)
+            denied = client.post('/api/gaia/templates', data={
+                'file': (io.BytesIO(wrong_stream.getvalue()), 'wrong.xlsx'),
+            }, content_type='multipart/form-data')
+            self.assertEqual(400, denied.status_code)
+            self.assertEqual(migrated, client.get('/api/gaia/templates/current').get_json()['template'])
+
+            uploaded = client.post('/api/gaia/templates', data={
+                'file': (io.BytesIO(legacy_bytes), 'new-template.xlsx'),
+            }, content_type='multipart/form-data')
+            self.assertEqual(201, uploaded.status_code, uploaded.get_json())
+            current = uploaded.get_json()['template']
+            self.assertNotEqual(migrated['id'], current['id'])
+            self.assertEqual(current, client.get('/api/gaia/templates/current').get_json()['template'])
+            self.assertEqual(legacy_bytes, Path(migrated['path']).read_bytes())
+            self.assertEqual(legacy_bytes, Path(current['path']).read_bytes())
+
+            Path(current['path']).write_bytes(b'tampered')
+            corrupted = client.get('/api/gaia/templates/current')
+            self.assertEqual(409, corrupted.status_code)
+            self.assertIn('哈希不一致', corrupted.get_json()['message'])
+
     def test_gaia_quality_codes_preview_excel_and_upload_guard(self):
         """Use shipped Gaia config, not synthetic Doudian property option IDs."""
         with tempfile.TemporaryDirectory() as root:
@@ -41,7 +91,8 @@ class GaiaListingApiTests(unittest.TestCase):
                 'file': (io.BytesIO('品牌,型号,标品ID,品类\n苹果,iPhone 16,123456,手机\n'.encode()), 'mapping.csv'),
             }, content_type='multipart/form-data').get_json()['mapping']
             repo = GaiaBatchRepository(str(root_path / 'panel_data/gaia_listing/batches'))
-            for label, code, wrong_id in [('99新', '99', '18972'), ('95新', '95', '18954')]:
+            for label, code, wrong_id in [('99新', '99', '18972'), ('95新', '95', '18954'),
+                                          ('9新', '90', '9'), ('准新机', '100', '0')]:
                 with self.subTest(label=label):
                     payload = {'shop_id': '5576543', 'source_path': str(template),
                                'mapping_version_id': mapping['id'], 'quality_label': label,
@@ -73,6 +124,30 @@ class GaiaListingApiTests(unittest.TestCase):
                     blocked = client.get(url)
                     self.assertEqual(409, blocked.status_code)
                     self.assertIn('成色 ID 在生成后发生变化', '；'.join(blocked.get_json()['preflight']['errors']))
+            multi = {'shop_id': '5576543', 'source_path': str(template),
+                     'mapping_version_id': mapping['id'], 'quality_labels': ['99新', '95新', '9新', '准新机'],
+                     'selected_sku_ids': ['123456'], 'scene': 2, 'create_count': 1}
+            preview_response = client.post('/api/gaia/batches/preview', json=multi)
+            self.assertEqual(200, preview_response.status_code, preview_response.get_json())
+            preview = preview_response.get_json()['preview']
+            self.assertEqual(4, preview['row_count'])
+            self.assertEqual(['99', '95', '90', '100'], preview['quality_ids'])
+            self.assertEqual(['99', '95', '90', '100'], [row['values'][4] for row in preview['rows']])
+            multi.update(expected_source_sha256=preview['source_sha256'],
+                         expected_quality_ids=preview['quality_ids'])
+            generated = client.post('/api/gaia/batches/generate', json=multi)
+            self.assertEqual(201, generated.status_code, generated.get_json())
+            batch = generated.get_json()['batch']
+            self.assertEqual(['99新', '95新', '9新', '准新机'], batch['quality_labels'])
+            self.assertEqual(['99', '95', '90', '100'], batch['quality_ids'])
+            self.assertEqual(1, batch['summary']['expected_product_count'])
+            download = client.get(generated.get_json()['download_url'])
+            book = load_workbook(io.BytesIO(download.data), read_only=True, data_only=True)
+            self.assertEqual(['99', '95', '90', '100'], [book.active.cell(row, 5).value for row in (2, 3, 4, 5)])
+            book.close()
+            download.close()
+            self.assertEqual(200, client.get('/api/gaia/batches/%s/handoff-preflight?shop_id=5576543'
+                                             % batch['id']).status_code)
             self.assertEqual(original, template.read_bytes(), 'source template must stay unchanged')
 
     def test_stop_endpoint_is_scoped_idempotent_and_refuses_submitted_work(self):

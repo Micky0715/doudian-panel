@@ -12,6 +12,7 @@ env.local.*
 # Browser sessions, cookies, merchant data and generated workbooks.
 /chrome_user_data*/
 /gaia_browser_data/
+/doudian_cpay_browser_data/
 /storage_state*.json
 /panel_data/
 /logs/

@@ -12,6 +12,9 @@ function fixture(fetch, {previous} = {}) {
   for (const selector of ['#gaiaSubmitBtn', '#gaiaUploadStatus', '#gaiaFormFields']) {
     elements[selector] = {disabled: false, textContent: '', addEventListener: (name, fn) => {events[selector + name] = fn;}};
   }
+  elements['#gaiaPriceInstallments'] = {value: '12'};
+  elements['#gaiaActivityName'] = {value: '【专享】年框商家双11大回馈'};
+  elements['#gaiaScene'] = {value: '2'};
   const storage = new Map();
   if (previous) storage.set('gaia-upload-batch', previous);
   const timers = [];
@@ -43,9 +46,47 @@ test('one explicit click starts the generated batch and reports accepted, not Do
   await ctx.events['#gaiaSubmitBtnclick']();
   assert.equal(calls.filter(call => call.options?.method === 'POST').length, 1);
   assert.equal(JSON.parse(calls[0].options.body).expected_output_hash, 'hash');
+  assert.equal(JSON.parse(calls[0].options.body).installments, 12);
+  assert.equal(JSON.parse(calls[0].options.body).activity_name, '【专享】年框商家双11大回馈');
   assert.equal(ctx.elements['#gaiaFormFields'].disabled, false);
   assert.equal(ctx.elements['#gaiaSubmitBtn'].disabled, true);
   assert.match(ctx.elements['#gaiaUploadStatus'].textContent, /未启动抖店发布/);
+});
+
+test('selected 24期 is sent with the one-click start request', async () => {
+  let body, ctx;
+  ctx = fixture(async (_url, options) => {
+    if (options?.method === 'POST') body = JSON.parse(options.body);
+    return response({success: true, batch: {...ctx.batch, state: 'confirmed',
+      gaia_receipt: {execution_key: 'key', phase: 'uploading'}}});
+  });
+  ctx.elements['#gaiaPriceInstallments'].value = '24';
+  await ctx.events['#gaiaSubmitBtnclick']();
+  assert.equal(body.installments, 24);
+});
+
+test('全款照常启动盖亚发品，但不请求分期导入', async () => {
+  let body, ctx;
+  ctx = fixture(async (_url, options) => {
+    if (options?.method === 'POST') body = JSON.parse(options.body);
+    return response({success: true, batch: {...ctx.batch, state: 'confirmed',
+      gaia_receipt: {execution_key: 'key', phase: 'uploading'}}});
+  });
+  ctx.elements['#gaiaPriceInstallments'].value = 'full';
+  await ctx.events['#gaiaSubmitBtnclick']();
+  assert.equal(body.installments, null);
+});
+
+test('直播间启动不附带直播货架分期导入', async () => {
+  let body, ctx;
+  ctx = fixture(async (_url, options) => {
+    if (options?.method === 'POST') body = JSON.parse(options.body);
+    return response({success: true, batch: {...ctx.batch, state: 'confirmed',
+      gaia_receipt: {execution_key: 'key', phase: 'uploading'}}});
+  });
+  ctx.elements['#gaiaScene'].value = '1';
+  await ctx.events['#gaiaSubmitBtnclick']();
+  assert.equal(body.installments, null);
 });
 
 test('lost start response polls the original batch without a second POST', async () => {

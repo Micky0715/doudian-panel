@@ -25,6 +25,7 @@ READ_ONLY_METHODS = frozenset({
     "product.getCatePropertyV2",
     "product.getProductUpdateRule",
     "product.getRecommendName",
+    "cpaypromotion.queryProductCpayPromotionAndShopStatus",
 })
 
 

@@ -25,14 +25,17 @@ GAIA_SHOP_NAMES = {
     "636781": "爱回收二手手机旗舰店",
     "7970406": "爱回收严选二手数码",
     "51165770": "爱回收严选二手优品",
-    "25595926": "拍拍二手悦玥手机专卖店",
+    # Gaia uses a shorter channel-shop name than the panel/DouDian display name.
+    # The live channel filter readback confirms this option has shop ID 25595926.
+    "25595926": "拍拍二手手机旗舰店",
     "168976032": "拍拍严选手机优品",
     "5576543": "拍拍严选二手手机",
     "156450040": "拍拍二手数码",
     "208501840": "返航新生二手手机旗舰店",
     "223523435": "悦玥潮品生活坊",
-    "221724193": "爱回收优品二手手机数码",
-    "221729127": "拍机堂Mall线上二号店",
+    # Channel names differ from panel names; the search options identify these IDs.
+    "221724193": "芯动严选二手手机",
+    "221729127": "拍机堂Mall线上店",
     "293816952": "新生严选二手手手",
 }
 
@@ -82,10 +85,29 @@ def _wait_for_channel_page(page: Page, login_wait: int, check_cancelled=None) ->
         page.wait_for_timeout(1000)
 
 
+def _scroll_shop_dropdown(dropdown) -> dict:
+    """Advance Gaia's virtual list, whose holder uses overflow: hidden."""
+    return dropdown.evaluate("""root => {
+        const elements = [root, ...root.querySelectorAll('*')];
+        const scrollable = elements.find(element =>
+            element.classList?.contains('rc-virtual-list-holder') &&
+            element.scrollHeight > element.clientHeight + 2) ||
+            elements.find(element =>
+                element.scrollHeight > element.clientHeight + 2 &&
+                ['auto', 'scroll'].includes(getComputedStyle(element).overflowY));
+        if (!scrollable) return {before: 0, after: 0, max: 0};
+        const before = scrollable.scrollTop;
+        const max = Math.max(0, scrollable.scrollHeight - scrollable.clientHeight);
+        scrollable.scrollTop = Math.min(max, before + Math.max(1, scrollable.clientHeight * 0.8));
+        scrollable.dispatchEvent(new Event('scroll', {bubbles: true}));
+        return {before, after: scrollable.scrollTop, max};
+    }""")
+
+
 def with_gaia_upload_form(
     *, work_dir: str, batch_id: str, shop_id: str, profile_dir: str,
     artifact_dir: str, login_wait: int = 120, headless: bool = False,
-    on_ready=None, verify_handoff=None, check_cancelled=None,
+    on_ready=None, verify_handoff=None, check_cancelled=None, before_create=None,
 ) -> dict:
     """Attach and read back a verified workbook, then delegate the final action.
 
@@ -151,6 +173,10 @@ def with_gaia_upload_form(
                 _visible_unique(page, "抖音渠道", roles=("tab", "button", "link")).click(timeout=8000)
                 page.get_by_text("双维成色发品", exact=True).wait_for(state="visible", timeout=20000)
 
+            if before_create is not None:
+                checkpoint()
+                result["before_channel_snapshot"] = before_create(page, batch)
+
             create_button = _visible_unique(page, "双维成色发品", roles=("button",))
             checkpoint()
             if not create_button.is_enabled():
@@ -211,18 +237,7 @@ def with_gaia_upload_form(
                     break
                 if current.count() > 1:
                     raise RuntimeError("目标店铺出现多个完全一致选项，拒绝选择")
-                position = dropdown.evaluate("""root => {
-                    const elements = [root, ...root.querySelectorAll('*')];
-                    const scrollable = elements.find((element) =>
-                        element.scrollHeight > element.clientHeight + 2 &&
-                        ['auto', 'scroll'].includes(getComputedStyle(element).overflowY));
-                    if (!scrollable) return {before: 0, after: 0, max: 0};
-                    const before = scrollable.scrollTop;
-                    const max = Math.max(0, scrollable.scrollHeight - scrollable.clientHeight);
-                    scrollable.scrollTop = Math.min(max, before + Math.max(1, scrollable.clientHeight * 0.8));
-                    scrollable.dispatchEvent(new Event('scroll', {bubbles: true}));
-                    return {before, after: scrollable.scrollTop, max};
-                }""")
+                position = _scroll_shop_dropdown(dropdown)
                 page.wait_for_timeout(180)
                 if position["after"] <= position["before"] or position["after"] >= position["max"]:
                     for line in dropdown.inner_text().splitlines():

@@ -123,11 +123,13 @@ class GatewayTests(unittest.TestCase):
                 ("product.getCatePropertyV2", {"category_leaf_id": 1000007628}),
                 ("product.getProductUpdateRule", {"category_id": 1000007628}),
                 ("product.getRecommendName", {"category_leaf_id": 1000007628}),
+                ("cpaypromotion.queryProductCpayPromotionAndShopStatus", {}),
             ):
                 gateway.call(method, params)
             self.assertEqual([row[1] for row in calls], [
                 "product.getCatePropertyV2", "product.getProductUpdateRule",
                 "product.getRecommendName",
+                "cpaypromotion.queryProductCpayPromotionAndShopStatus",
             ])
 
     def test_expired_token_refreshes_current_shop_and_retries_once(self):

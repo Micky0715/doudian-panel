@@ -53,9 +53,18 @@ def inspect_handoff(batch: dict, *, requested_shop_id: str, outputs_dir: str,
         errors.append(str(exc))
 
     try:
-        quality = quality_repository.get_required(str(batch.get("quality_label") or ""))
-        if quality.dy_quality_id != batch.get("quality_id"):
-            errors.append("成色 ID 在生成后发生变化，须重新生成")
+        labels = batch.get("quality_labels") or [str(batch.get("quality_label") or "")]
+        stored_ids = batch.get("quality_ids") or [batch.get("quality_id")]
+        if (not isinstance(labels, list) or not isinstance(stored_ids, list)
+                or len(labels) != len(stored_ids) or len(labels) != len(set(labels))):
+            errors.append("批次成色清单无效，须重新生成")
+        else:
+            current_ids = [quality_repository.get_required(label).dy_quality_id for label in labels]
+            expected_label = labels[0] if len(labels) == 1 else "、".join(labels)
+            expected_id = stored_ids[0] if len(stored_ids) == 1 else ",".join(stored_ids)
+            if (current_ids != stored_ids or batch.get("quality_label") != expected_label
+                    or batch.get("quality_id") != expected_id):
+                errors.append("成色 ID 在生成后发生变化，须重新生成")
     except GaiaMappingContractError as exc:
         errors.append(str(exc))
 

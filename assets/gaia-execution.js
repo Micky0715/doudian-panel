@@ -9,9 +9,9 @@ window.createGaiaUploadController = function ({onChange = () => {}} = {}) {
   const requests = new Set();
   // A missing HTTP response is not proof of cancellation or submission failure.
   // Time out the transport, then reconcile the SAME batch, never resend Start.
-  async function request(url, options = {}) {
+  async function request(url, options = {}, timeoutMs = 10000) {
     const abort = new AbortController();
-    const timeout = setTimeout(() => abort.abort(), 10000);
+    const timeout = setTimeout(() => abort.abort(), timeoutMs);
     requests.add(abort);
     try {
       const response = await fetch(url, {...options, signal: abort.signal});
@@ -22,9 +22,13 @@ window.createGaiaUploadController = function ({onChange = () => {}} = {}) {
     }
   }
   const submitted = () => batch?.gaia_receipt?.submit_intent
-    || ['gaia_submitted', 'gaia_accepted', 'gaia_rejected'].includes(batch?.state);
+    || ['gaia_submitted', 'gaia_accepted', 'gaia_rejected', 'doudian_drafts_matched', 'handed_off'].includes(batch?.state);
   const active = value => ['confirmed', 'gaia_submitted'].includes(value?.state)
     && ['uploading', 'submitting'].includes(value?.gaia_receipt?.phase)
+    || ['gaia_accepted', 'doudian_drafts_matched'].includes(value?.state)
+      && ['waiting_gaia', 'ids_verified', 'submitting'].includes(value?.gaia_receipt?.price_phase)
+    || value?.state === 'handed_off'
+      && ['waiting_price', 'preparing', 'submitting'].includes(value?.gaia_receipt?.activity_phase)
     || value?.state === 'cancelled' && value?.gaia_receipt?.phase === 'stopping';
   const canStop = () => !disposed && !stopping && !stopUncertain
     && batch?.id && batch?.shop_id && batch?.output_hash
@@ -106,8 +110,13 @@ window.createGaiaUploadController = function ({onChange = () => {}} = {}) {
     try {
       const response = await request('/api/gaia/batches/' + encodeURIComponent(batch.id) + '/start', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({shop_id: batch.shop_id, expected_output_hash: batch.output_hash, confirmed: true})
-      });
+        body: JSON.stringify({shop_id: batch.shop_id, expected_output_hash: batch.output_hash,
+          confirmed: true,
+          activity_name: document.querySelector('#gaiaActivityName')?.value?.trim() || '',
+          installments: document.querySelector('#gaiaScene')?.value === '1'
+            || document.querySelector('#gaiaPriceInstallments')?.value === 'full'
+            ? null : Number(document.querySelector('#gaiaPriceInstallments')?.value || 12)})
+      }, 60000);
       const data = response.data;
       if (stopping || version !== revision || disposed) return {success: true};
       if (!data.success) {
@@ -191,6 +200,7 @@ window.createGaiaUploadController = function ({onChange = () => {}} = {}) {
     stopStatus,
     stop,
     start,
+    refresh: poll,
     setEnabled(value) { enabled = value; render(); },
     setBatch(value) {
       if (busy) return;
