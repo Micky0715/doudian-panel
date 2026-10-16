@@ -198,7 +198,7 @@ class ListingPreflightInspector:
             "condition_unresolved": "标题和名称前缀中无法解析成色",
             "condition_image_missing": "共享商详图库缺少对应成色图",
             "condition_image_ambiguous": "共享商详图库存在多个同名成色图",
-            "detail_image_count_invalid": "商详图未严格达到14张",
+            "detail_image_count_invalid": "商详图数量不符合当前成色要求（准新品13张，其他成色14张）",
         }.get(code, code)
 
 

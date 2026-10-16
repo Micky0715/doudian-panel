@@ -15,6 +15,7 @@ env.local.*
 /doudian_cpay_browser_data/
 /storage_state*.json
 /panel_data/
+/exports/
 /logs/
 /outputs/
 /test_data/

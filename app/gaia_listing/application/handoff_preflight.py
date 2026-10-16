@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import zipfile
 from pathlib import Path
+
+from openpyxl import load_workbook
 
 from ..domain.mapping_contract import GaiaMappingContractError
 from ..domain.states import GaiaBatchState
@@ -36,6 +39,8 @@ def inspect_handoff(batch: dict, *, requested_shop_id: str, outputs_dir: str,
     summary = batch.get("summary") if isinstance(batch.get("summary"), dict) else {}
     if summary.get("blocking_errors") != 0 or not summary.get("generated_rows"):
         errors.append("批次存在阻断错误或没有生成行")
+    if isinstance(summary.get("generated_rows"), int) and summary["generated_rows"] > 499:
+        errors.append("盖亚单文件最多允许 500 行（含表头），本批次不能提交；请重新拆分型号生成")
 
     source = str(batch.get("source_path") or "")
     try:
@@ -79,7 +84,15 @@ def inspect_handoff(batch: dict, *, requested_shop_id: str, outputs_dir: str,
         try:
             if sha256_file(expected) != batch.get("output_hash"):
                 errors.append("输出文件哈希不一致")
-        except OSError:
+            else:
+                workbook = load_workbook(expected, read_only=True, data_only=True)
+                try:
+                    sheet = workbook["Sheet1"] if "Sheet1" in workbook.sheetnames else workbook.active
+                    if sheet.max_row > 500 and not any("单文件最多允许 500 行" in error for error in errors):
+                        errors.append("盖亚文件实际行数超过 500（含表头），不能提交；请重新拆分型号生成")
+                finally:
+                    workbook.close()
+        except (OSError, ValueError, zipfile.BadZipFile):
             errors.append("输出文件不可读取")
 
     if errors:

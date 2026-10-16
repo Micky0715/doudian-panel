@@ -146,6 +146,12 @@ class GradeDetailDraftTests(unittest.TestCase):
         with self.assertRaisesRegex(Exception, "合并成色说明图"):
             compose_detail_urls(originals, [], use_combined_grade_image=True)
 
+    def test_nearly_new_keeps_common_details_without_grade_upload(self):
+        originals = [f"https://byte.example/obj/ecom-shop-material/d{i}" for i in range(13)]
+        self.assertEqual(compose_detail_urls(originals, [], no_grade_image=True), originals)
+        with self.assertRaisesRegex(Exception, "成色图数量"):
+            compose_detail_urls(originals, ["https://byte.example/obj/ecom-shop-material/99"], no_grade_image=True)
+
 
 if __name__ == "__main__":
     unittest.main()

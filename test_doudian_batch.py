@@ -219,6 +219,12 @@ def resolve_official_model_via_api(parsed: dict):
         return None, "API 型号解析失败: %s" % exc
 # 商详图片目录（成色图 + 13张通用图 = 共14张，所有店铺共享）
 DETAIL_IMAGE_COUNT = 14
+COMMON_ONLY_DETAIL_IMAGE_COUNT = 13
+
+
+def expected_detail_image_count(condition: str) -> int:
+    """准新品只用通用商详图，不上传任何成色专属图。"""
+    return COMMON_ONLY_DETAIL_IMAGE_COUNT if condition == "准新品" else DETAIL_IMAGE_COUNT
 def _default_detail_image_dir() -> str:
     """兼容运营约定的新旧目录名以及 Windows/macOS 专用上架机。"""
     configured = os.environ.get("DP_DETAIL_IMAGE_DIR", "").strip()
@@ -824,6 +830,7 @@ def get_detail_image_paths(parsed: dict) -> list:
         14张图片路径的列表
     """
     condition = parsed.get("condition", "")  # 如 "95新", "9新", "99新"
+    expected_count = expected_detail_image_count(condition)
     detail_dir = DETAIL_IMAGE_DIR
 
     # 1. 收集13张通用商详图（1、2、4...14，3号位由成色图替代）
@@ -841,7 +848,7 @@ def get_detail_image_paths(parsed: dict) -> list:
 
     # 2. 查找成色图
     condition_path = None
-    candidates = [
+    candidates = [] if condition == "准新品" else [
         os.path.join(detail_dir, f"{condition}.jpg"),
         os.path.join(detail_dir, f"{condition}.png"),
         os.path.join(detail_dir, f" {condition}.jpg"),
@@ -852,7 +859,7 @@ def get_detail_image_paths(parsed: dict) -> list:
             condition_path = c
             break
 
-    if not condition_path:
+    if not condition_path and condition != "准新品":
         log("DETAIL_IMG", f"警告: 成色图不存在 - {condition}.jpg，跳过成色图")
 
     # 3. 组装：成色图放在第三张位置（index 2，即 2.jpg 之后、4.jpg 之前）
@@ -869,14 +876,14 @@ def get_detail_image_paths(parsed: dict) -> list:
     if condition_path and not inserted_condition:
         paths.append(condition_path)
 
-    log("DETAIL_IMG", f"成色: {condition}, 商详图数量: {len(paths)} (预期{DETAIL_IMAGE_COUNT}张)")
+    log("DETAIL_IMG", f"成色: {condition}, 商详图数量: {len(paths)} (预期{expected_count}张)")
     return paths
 
 
-def calculate_detail_image_version(paths: list) -> str:
+def calculate_detail_image_version(paths: list, expected_count: int = DETAIL_IMAGE_COUNT) -> str:
     """Return a stable content fingerprint for one complete detail-image set."""
-    if len(paths) != DETAIL_IMAGE_COUNT:
-        raise ValueError(f"商详图片不完整: 实际{len(paths)}张，预期{DETAIL_IMAGE_COUNT}张")
+    if len(paths) != expected_count:
+        raise ValueError(f"商详图片不完整: 实际{len(paths)}张，预期{expected_count}张")
     digest = hashlib.sha256()
     for path in paths:
         if not os.path.isfile(path):
@@ -923,11 +930,12 @@ def save_detail_image_version(shop_id: str, product_id: str, version: str) -> No
 
 
 def should_refresh_detail_images(shop_id: str, product_id: str,
-                                 current_count: int, local_version: str) -> tuple:
+                                 current_count: int, local_version: str,
+                                 expected_count: int = DETAIL_IMAGE_COUNT) -> tuple:
     """Decide whether local detail images must replace the images on DouDian."""
     uploaded_version = load_detail_image_version(shop_id, product_id)
-    if current_count != DETAIL_IMAGE_COUNT:
-        return True, f"页面商详图为{current_count}张，不是{DETAIL_IMAGE_COUNT}张"
+    if current_count != expected_count:
+        return True, f"页面商详图为{current_count}张，不是{expected_count}张"
     if not uploaded_version:
         return True, "没有该商品的商详图版本记录"
     if uploaded_version != local_version:
@@ -975,7 +983,7 @@ def _normalize_condition(cond: str) -> str:
         return ""
     cond = cond.strip()
     # 已经是标准格式，直接返回
-    if re.fullmatch(r'(99新|95新|9新|8成新|9成新)', cond):
+    if re.fullmatch(r'(准新品|99新|95新|9新|8成新|9成新)', cond):
         return cond
     # 简写数字成色：9/95/99 → 9新/95新/99新
     if re.fullmatch(r'9|95|99', cond):
@@ -1143,18 +1151,18 @@ def parse_title(title: str) -> dict:
     if m:
         # 仅当真为成色时才采纳，避免【直播】【24期免息】等营销前缀被误判为成色
         maybe_cond = _normalize_condition(m.group(1))
-        if maybe_cond in ("99新", "95新", "9新", "8成新", "9成新"):
+        if maybe_cond in ("准新品", "99新", "95新", "9新", "8成新", "9成新"):
             result["condition"] = maybe_cond
 
     # 若方括号不是成色（如【直播】），继续检查后两种成色格式
     if not result["condition"]:
-        m_dash = re.search(r'--\s*(99新|95新|9新|8成新|9成新)\s*--', title)
+        m_dash = re.search(r'--\s*(准新品|99新|95新|9新|8成新|9成新)\s*--', title)
         if m_dash:
             result["condition"] = _normalize_condition(m_dash.group(1))
 
     if not result["condition"]:
         # 匹配开头的成色词：9新 / 95新 / 99新 / 8成新 等，容错纯数字简写
-        m2 = re.match(r'(99新|95新|9新|99|95|9|8成新|9成新)', title)
+        m2 = re.match(r'(准新品|99新|95新|9新|99|95|9|8成新|9成新)', title)
         if m2:
             result["condition"] = _normalize_condition(m2.group(1))
 
@@ -1176,10 +1184,10 @@ def parse_title(title: str) -> dict:
         # 先去掉成色标记，简化后续处理
         after_brand = re.sub(r'^【[^】]+】', '', title).strip()
         # 也去掉 --xxx新-- 格式的成色标记（头部或尾部）
-        after_brand = re.sub(r'^--\s*\d+[新成][新新]?\s*--', '', after_brand).strip()
-        after_brand = re.sub(r'--\s*\d+[新成][新新]?\s*--\s*$', '', after_brand).strip()
+        after_brand = re.sub(r'^--\s*(?:准新品|\d+[新成][新新]?)\s*--', '', after_brand).strip()
+        after_brand = re.sub(r'--\s*(?:准新品|\d+[新成][新新]?)\s*--\s*$', '', after_brand).strip()
         # 去掉开头的成色前缀（如 "99新 " / "95新 " / "9新 "）
-        after_brand = re.sub(r'^(99新|95新|9新|8成新|9成新)\s*', '', after_brand).strip()
+        after_brand = re.sub(r'^(准新品|99新|95新|9新|8成新|9成新)\s*', '', after_brand).strip()
 
         # 去掉品牌前缀组合（如 "Redmi/红米 " / "Xiaomi/小米 "）
         # 这些是系统灰框前缀中的品牌名，不是型号的一部分
@@ -1221,8 +1229,8 @@ def parse_title(title: str) -> dict:
             # 先去掉成色标记（如【95新】或 --95新-- 后面的内容），否则灰框会挡住品牌剥离
             # 注意：--xx新-- 可能出现在头部或尾部（编辑页灰框前缀格式）
             after_brand = re.sub(r'^【[^】]+】', '', after_brand).strip()
-            after_brand = re.sub(r'^--\s*\d+[新成][新新]?\s*--', '', after_brand).strip()
-            after_brand = re.sub(r'--\s*\d+[新成][新新]?\s*--\s*$', '', after_brand).strip()
+            after_brand = re.sub(r'^--\s*(?:准新品|\d+[新成][新新]?)\s*--', '', after_brand).strip()
+            after_brand = re.sub(r'--\s*(?:准新品|\d+[新成][新新]?)\s*--\s*$', '', after_brand).strip()
 
             # 修复: 循环去掉前缀中重复出现的品牌名（如 "99新 vivo vivo S60" → "S60"）
             # 抖店编辑页经常出现前缀与输入框内容重复拼接，导致品牌名出现多次
@@ -1249,8 +1257,8 @@ def parse_title(title: str) -> dict:
 
                 # 先去掉成色标记，再循环剥离重复品牌名
                 after_brand = re.sub(r'^【[^】]+】', '', after_brand).strip()
-                after_brand = re.sub(r'^--\s*\d+[新成][新新]?\s*--', '', after_brand).strip()
-                after_brand = re.sub(r'--\s*\d+[新成][新新]?\s*--\s*$', '', after_brand).strip()
+                after_brand = re.sub(r'^--\s*(?:准新品|\d+[新成][新新]?)\s*--', '', after_brand).strip()
+                after_brand = re.sub(r'--\s*(?:准新品|\d+[新成][新新]?)\s*--\s*$', '', after_brand).strip()
                 after_brand = _strip_repeated_brand(after_brand, cn_name, en_name)
                 # 精确移除品类词 + 搜索关键词（全网通、国行等不属于型号）
                 after_brand_clean = _strip_title_noise(after_brand)
@@ -1287,9 +1295,9 @@ def parse_title(title: str) -> dict:
             # 对该推断品牌重新提取型号（复用主分支的清理逻辑）
             after_brand = title
             after_brand = re.sub(r'^【[^】]+】', '', after_brand).strip()
-            after_brand = re.sub(r'^--\s*\d+[新成][新新]?\s*--', '', after_brand).strip()
-            after_brand = re.sub(r'--\s*\d+[新成][新新]?\s*--\s*$', '', after_brand).strip()
-            after_brand = re.sub(r'^(99新|95新|9新|8成新|9成新)\s*', '', after_brand).strip()
+            after_brand = re.sub(r'^--\s*(?:准新品|\d+[新成][新新]?)\s*--', '', after_brand).strip()
+            after_brand = re.sub(r'--\s*(?:准新品|\d+[新成][新新]?)\s*--\s*$', '', after_brand).strip()
+            after_brand = re.sub(r'^(准新品|99新|95新|9新|8成新|9成新)\s*', '', after_brand).strip()
             # 推断品牌后同样要循环剥离重复的品牌名
             inf_en_name = BRAND_MAP[inferred_brand].split("/")[0]
             after_brand = _strip_repeated_brand(after_brand, inferred_brand, inf_en_name)
@@ -6504,6 +6512,7 @@ def upload_detail_images(page, parsed: dict) -> bool:
         True 表示上传成功，False 表示失败
     """
     log("UPLOAD_DETAIL", "===== 开始上传商详图片 =====")
+    expected_count = expected_detail_image_count(parsed.get("condition", ""))
 
     # 1. 准备文件路径
     detail_paths = get_detail_image_paths(parsed)
@@ -6513,9 +6522,9 @@ def upload_detail_images(page, parsed: dict) -> bool:
         return False
 
     total_files = len(detail_paths)
-    log("UPLOAD_DETAIL", f"商详图片数量: {total_files} (预期{DETAIL_IMAGE_COUNT}张)")
-    if total_files != DETAIL_IMAGE_COUNT:
-        log("UPLOAD_DETAIL", f"错误: 商详图片不完整，实际{total_files}张，必须为{DETAIL_IMAGE_COUNT}张")
+    log("UPLOAD_DETAIL", f"商详图片数量: {total_files} (预期{expected_count}张)")
+    if total_files != expected_count:
+        log("UPLOAD_DETAIL", f"错误: 商详图片不完整，实际{total_files}张，必须为{expected_count}张")
         return False
     for i, p in enumerate(detail_paths):
         log("UPLOAD_DETAIL", f"  [{i+1}] {os.path.basename(p)}")
@@ -6571,7 +6580,7 @@ def upload_detail_images(page, parsed: dict) -> bool:
                     after_count = page.evaluate("""
                         () => document.querySelectorAll('.styles_imgWrapper__dqiHn').length
                     """)
-                    if after_count == DETAIL_IMAGE_COUNT:
+                    if after_count == expected_count:
                         break
                     if after_count == last_count:
                         stable_rounds += 1
@@ -6579,14 +6588,14 @@ def upload_detail_images(page, parsed: dict) -> bool:
                         stable_rounds = 0
                         last_count = after_count
                     if waited % 10 == 0:
-                        log("UPLOAD_DETAIL", f"策略A异步处理中: {after_count}/{DETAIL_IMAGE_COUNT}（已等{waited}秒）")
+                        log("UPLOAD_DETAIL", f"策略A异步处理中: {after_count}/{expected_count}（已等{waited}秒）")
                 log("UPLOAD_DETAIL", f"策略A 上传后商详图数量: {after_count} (初始: {initial_count})")
 
-                if after_count == DETAIL_IMAGE_COUNT:
-                    log("UPLOAD_DETAIL", f"✅ 策略A 成功，最终商详图严格确认为{DETAIL_IMAGE_COUNT}张")
+                if after_count == expected_count:
+                    log("UPLOAD_DETAIL", f"✅ 策略A 成功，最终商详图严格确认为{expected_count}张")
                     return True
                 else:
-                    log("UPLOAD_DETAIL", f"策略A 最终数量不是{DETAIL_IMAGE_COUNT}张（实际{after_count}），尝试策略B...")
+                    log("UPLOAD_DETAIL", f"策略A 最终数量不是{expected_count}张（实际{after_count}），尝试策略B...")
 
             except Exception as e_a:
                 log("UPLOAD_DETAIL", f"策略A 异常: {e_a}")
@@ -6645,7 +6654,7 @@ def upload_detail_images(page, parsed: dict) -> bool:
             current_before = page.evaluate("""
                 () => document.querySelectorAll('.styles_imgWrapper__dqiHn').length
             """)
-            if current_before >= DETAIL_IMAGE_COUNT:
+            if current_before >= expected_count:
                 log("UPLOAD_DETAIL", f"策略B幂等闸门：当前已有{current_before}张，停止追加")
                 break
             fname = os.path.basename(path)
@@ -6693,11 +6702,11 @@ def upload_detail_images(page, parsed: dict) -> bool:
         """)
         log("UPLOAD_DETAIL", f"策略B 最终商详图数量: {final_count} (初始: {initial_count})")
 
-        if final_count == DETAIL_IMAGE_COUNT:
-            log("UPLOAD_DETAIL", f"✅ 策略B 成功，最终商详图严格确认为{DETAIL_IMAGE_COUNT}张")
+        if final_count == expected_count:
+            log("UPLOAD_DETAIL", f"✅ 策略B 成功，最终商详图严格确认为{expected_count}张")
             return True
         else:
-            log("UPLOAD_DETAIL", f"❌ 策略B 失败，最终商详图为{final_count}张，必须为{DETAIL_IMAGE_COUNT}张")
+            log("UPLOAD_DETAIL", f"❌ 策略B 失败，最终商详图为{final_count}张，必须为{expected_count}张")
             return False
 
     except Exception as e:
@@ -9307,8 +9316,9 @@ def process_single_product(page, product_id: str, product_name: str = "") -> tup
         """)
         log("PROCESS", f"检查商详图数量（删除前）: {detail_count_before}")
         detail_paths = get_detail_image_paths(parsed)
+        expected_count = expected_detail_image_count(parsed.get("condition", ""))
         try:
-            detail_version = calculate_detail_image_version(detail_paths)
+            detail_version = calculate_detail_image_version(detail_paths, expected_count)
         except (ValueError, FileNotFoundError, OSError) as e:
             reason = f"本地商详图片校验失败，拒绝删除旧图和发布: {e}"
             set_last_publish_error(reason)
@@ -9318,7 +9328,7 @@ def process_single_product(page, product_id: str, product_name: str = "") -> tup
         detail_upload_ok = True
         detail_skipped = False
         refresh_detail, refresh_reason = should_refresh_detail_images(
-            CURRENT_SHOP_ID, product_id, detail_count_before, detail_version
+            CURRENT_SHOP_ID, product_id, detail_count_before, detail_version, expected_count
         )
         if not refresh_detail:
             log("PROCESS", f"✅ 商详图无需更新：{refresh_reason}")
@@ -9344,14 +9354,14 @@ def process_single_product(page, product_id: str, product_name: str = "") -> tup
 
         # ========== Step 12: 处理商详图（删除+上传，或跳过） ==========
         if detail_skipped:
-            log("PROCESS", f"商详图已跳过（已有{DETAIL_IMAGE_COUNT}张）")
+            log("PROCESS", f"商详图已跳过（已有{expected_count}张）")
         else:
             log("PROCESS", "开始删除原有商详图...")
             delete_detail_images(page)
-            log("PROCESS", f"开始上传新的商详图片（{DETAIL_IMAGE_COUNT}张）...")
+            log("PROCESS", f"开始上传新的商详图片（{expected_count}张）...")
             detail_upload_ok = upload_detail_images(page, parsed)
             if not detail_upload_ok:
-                reason = f"商详图片上传后未严格达到{DETAIL_IMAGE_COUNT}张，已阻止发布"
+                reason = f"商详图片上传后未严格达到{expected_count}张，已阻止发布"
                 set_last_publish_error(reason)
                 log("PROCESS", f"❌ {reason}")
                 return False, time.time() - start_time

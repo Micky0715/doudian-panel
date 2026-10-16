@@ -218,6 +218,16 @@ class ListingPreflightTests(unittest.TestCase):
             self.assertFalse(result["ok"])
             self.assertIn("condition_unresolved", result["reasons"])
 
+    def test_nearly_new_needs_only_common_detail_images(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for stem in ("1", "2", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14"):
+                (root / f"{stem}.jpg").write_bytes(stem.encode())
+            result = DetailImageInspector(root).inspect("准新品")
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["count"], 13)
+            self.assertFalse(any("准新品" in path for path in result["files"]))
+
 
 if __name__ == "__main__":
     unittest.main()

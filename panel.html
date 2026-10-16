@@ -123,7 +123,13 @@
               <label><input type="checkbox" value="准新机"><span>准新机</span></label>
             </div>
           </div>
-          <label class="field"><span class="field-label">付款方式 <small>直播货架</small></span><select id="gaiaPriceInstallments"><option value="full">全款（不处理分期）</option><option value="12" selected>12 期</option><option value="24">24 期</option></select></label>
+          <div class="field"><span class="field-label" id="gaiaPaymentLabel">付款方式 <small>全款与分期互斥；分期可多选</small></span><div class="gaia-quality-options" id="gaiaPaymentOptions" role="group" aria-labelledby="gaiaPaymentLabel">
+            <label><input type="checkbox" value="full"><span>全款</span></label>
+            <label><input type="checkbox" value="6"><span>6 期</span></label>
+            <label><input type="checkbox" value="12" checked><span>12 期</span></label>
+            <label><input type="checkbox" value="24"><span>24 期</span></label>
+          </div><small>盖亚匹配店铺 ID + 场域 + 最高期数规则；抖店仅勾选这里选中的期数。</small></div>
+          <label class="field gaia-quality-link-field"><span class="field-label">是否质检链接</span><select id="gaiaQualityLink"><option value="1">是（表中填 1）</option><option value="0">否（表中填 0）</option></select></label>
           <label class="field gaia-activity-field" id="gaiaActivityField"><span class="field-label">分期免息活动名称 <small>按抖店活动卡片填写</small></span><input id="gaiaActivityName" type="text" maxlength="120" autocomplete="off" placeholder="例如：【专享】年框商家双11大回馈" aria-describedby="gaiaActivityHint"><small id="gaiaActivityHint">仅支持单品/部分商品活动；会随本批次保存，匹配不唯一时停止。</small></label>
           <label class="field gaia-model-field"><span class="field-label">手机型号 <small>每行一个，建议带上品牌</small></span><textarea id="gaiaModels" rows="4" placeholder="苹果,iPhone 17 Pro&#10;OPPO,Find X8&#10;小米,Redmi K80"></textarea></label>
         </div>
@@ -141,6 +147,11 @@
           <div class="inspect-summary gaia-model-match-result" id="gaiaModelMatchResult">填写型号后，点击开始自动匹配。</div>
           <div id="gaiaGeneratedPreview" class="inspect-summary">尚未生成文件。</div>
           <a id="gaiaDownloadFile" class="btn" hidden>下载已校验的盖亚文件</a>
+          <div class="gaia-price-tools">
+            <label class="field"><span class="field-label">盖亚创建优品结果表（只读诊断）</span><input id="gaiaResultFile" type="file" accept=".xlsx"></label>
+            <button class="btn" id="gaiaDiagnoseResultBtn" type="button">核对本批失败原因</button>
+          </div>
+          <div class="inspect-summary" id="gaiaResultDiagnosis" role="status">盖亚已受理不代表建品成功。可上传运营下载的结果表核对首发错误；不会重新提交。</div>
         </details>
       </section>
 
@@ -351,8 +362,8 @@
 </div>
 
 <script src="/assets/mascot.js"></script>
-<script src="/assets/gaia-execution.js?v=20261012-gaia-full-payment-1"></script>
-<script src="/assets/gaia-workspace.js?v=20261012-gaia-activity-field-1"></script>
+<script src="/assets/gaia-execution.js?v=20261013-payment-terms-1"></script>
+<script src="/assets/gaia-workspace.js?v=20261013-payment-terms-1"></script>
 <script src="/assets/panel.js?v=20260924-clean-panel-1"></script>
 </body>
 </html>

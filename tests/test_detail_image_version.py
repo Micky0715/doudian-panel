@@ -48,6 +48,24 @@ class DetailImageVersionTests(unittest.TestCase):
                 refresh, _ = batch.should_refresh_detail_images("shop", "product", 13, "v1")
                 self.assertTrue(refresh)
 
+    def test_nearly_new_paths_and_version_have_no_grade_image(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for slot in (1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
+                (root / f"{slot}.jpg").write_bytes(str(slot).encode())
+            (root / "99新.jpg").write_bytes(b"not-for-nearly-new")
+            with patch.object(batch, "DETAIL_IMAGE_DIR", str(root)):
+                paths = batch.get_detail_image_paths({"condition": "准新品"})
+            self.assertEqual(len(paths), 13)
+            self.assertFalse(any("99新" in path for path in paths))
+            version = batch.calculate_detail_image_version(paths, 13)
+            self.assertTrue(version)
+            with patch.object(batch, "DETAIL_VERSION_DIR", str(root / "versions")):
+                batch.save_detail_image_version("shop", "product", version)
+                self.assertEqual(batch.should_refresh_detail_images(
+                    "shop", "product", 13, version, 13,
+                )[0], False)
+
 
 if __name__ == "__main__":
     unittest.main()

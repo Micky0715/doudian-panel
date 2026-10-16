@@ -6,6 +6,7 @@ import csv
 import re
 import zipfile
 from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import Iterable, List, Mapping
 
@@ -29,7 +30,18 @@ HEADER_ALIASES = {
     "standard_sku_id": ("标品id", "标品sku id", "standardskuid", "拍拍标品skuid"),
     "category": ("品类", "品类名称", "类目", "商品品类", "category"),
     "product_name": ("标品名称", "商品名称", "productname"),
+    "goods_id": ("货品id", "goodsid"),
+    "dual_quality": ("双维成色",),
 }
+
+
+def _dy_quality_id_from_export(value: object) -> str | None:
+    """Only map the explicit grade families found in Gaia's goods export."""
+    code = str(value or "").strip().upper()
+    if code in {"准新机", "全新仅拆封"}:
+        return "100"
+    match = re.fullmatch(r"(99|95|90)[A-Z]", code)
+    return match.group(1) if match else None
 
 
 @dataclass(frozen=True)
@@ -87,6 +99,8 @@ def _records_from_rows(rows: Iterable[Iterable[object]]) -> ModelMappingImportRe
     indexes = _index_headers(headers)
     records = []
     sku_owners = {}
+    goods_by_sku: dict[str, dict[str, set[str]]] = {}
+    has_goods_coverage = "goods_id" in indexes and "dual_quality" in indexes
     source_data_rows = 0
     accepted_rows = 0
     duplicate_rows = 0
@@ -135,6 +149,12 @@ def _records_from_rows(rows: Iterable[Iterable[object]]) -> ModelMappingImportRe
                 raise GaiaMappingContractError(
                     "型号映射表同一标品ID对应多个型号或品类/品牌：%s" % record.standard_sku_id
                 )
+        if has_goods_coverage:
+            quality_id = _dy_quality_id_from_export(value("dual_quality"))
+            goods_id = value("goods_id")
+            if quality_id and goods_id:
+                goods_by_sku.setdefault(record.standard_sku_id, {}).setdefault(quality_id, set()).add(goods_id)
+        if owner is not None:
             # 货品维度导出会因成色、价格规则等重复出现同一标品 SKU。
             # 映射版本只保留其第一次出现的位置，输出仍然稳定可审计。
             duplicate_rows += 1
@@ -142,6 +162,11 @@ def _records_from_rows(rows: Iterable[Iterable[object]]) -> ModelMappingImportRe
         sku_owners[record.standard_sku_id] = identity
         records.append(record)
         accepted_rows += 1
+    if has_goods_coverage:
+        records = [replace(record, goods_by_quality={
+            quality_id: sorted(goods_ids) for quality_id, goods_ids in
+            sorted(goods_by_sku.get(record.standard_sku_id, {}).items())
+        }) for record in records]
     if not records:
         if mainland_filter_applied and excluded_non_mainland_rows:
             raise GaiaMappingContractError("型号映射表没有明确标注“国行”的有效数据行")

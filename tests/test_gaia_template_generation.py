@@ -8,7 +8,7 @@ from openpyxl import Workbook, load_workbook
 
 from app.gaia_listing.application.template_generation import build_template_rows
 from app.gaia_listing.domain.mapping_contract import GaiaMappingContractError, ModelMappingRecord, QualityMappingRecord
-from app.gaia_listing.domain.template_contract import GAIA_TEMPLATE_HEADERS
+from app.gaia_listing.domain.template_contract import GAIA_TEMPLATE_HEADERS, aggregate_mark_for_index
 from app.gaia_listing.infrastructure.model_mapping_import import import_model_mapping
 from app.gaia_listing.infrastructure.quality_mapping_repository import QualityMappingRepository
 from app.gaia_listing.infrastructure.template_writer import (
@@ -130,6 +130,22 @@ class GaiaTemplateGenerationTests(unittest.TestCase):
         )
         self.assertEqual([row.values()[3:5] for row in rows],
                          [("sku-400", "99"), ("sku-400", "95")])
+
+    def test_aggregate_mark_follows_model_order_not_sku_or_quality_count(self):
+        rows = build_template_rows(
+            scene=2,
+            models=[
+                ModelMappingRecord("苹果", "iPhone 17 Pro", "apple-1", "手机"),
+                ModelMappingRecord("苹果", "iPhone 17 Pro", "apple-2", "手机"),
+                ModelMappingRecord("OPPO", "Find X8", "oppo-1", "手机"),
+                ModelMappingRecord("小米", "Redmi K80", "xiaomi-1", "手机"),
+            ],
+            quality=[QualityMappingRecord("99新", "99"), QualityMappingRecord("95新", "95")],
+        )
+        self.assertEqual([row.values()[1] for row in rows],
+                         ["A", "A", "A", "A", "B", "B", "C", "C"])
+        self.assertEqual([aggregate_mark_for_index(index) for index in (0, 25, 26, 27)],
+                         ["A", "Z", "AA", "AB"])
 
     def test_writer_refuses_overwrite_of_template_data(self):
         source = self._template()

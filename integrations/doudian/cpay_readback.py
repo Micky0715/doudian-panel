@@ -30,7 +30,7 @@ def _periods(response: dict) -> tuple[set[int], str]:
     return periods, activity_id
 
 
-def verify_cpay_membership(env_path: str, shop_id: str, installments: int,
+def verify_cpay_membership(env_path: str, shop_id: str, installments,
                            product_ids: list[str], *, gateway=None,
                            attempts: int = 3, delay_seconds: float = 2) -> dict:
     client = gateway or DoudianReadOnlyGateway(env_path, shop_id)

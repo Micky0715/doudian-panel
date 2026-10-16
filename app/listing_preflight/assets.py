@@ -167,7 +167,7 @@ class DetailImageInspector:
     """Validate the shared 14-image detail set without importing browser code."""
 
     GENERAL_SLOTS = (1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14)
-    CONDITIONS = {"9新", "95新", "99新"}
+    CONDITIONS = {"9新", "95新", "99新", "准新品"}
 
     def __init__(self, detail_root: str | Path):
         self.detail_root = Path(detail_root).expanduser().resolve()
@@ -191,7 +191,7 @@ class DetailImageInspector:
             else:
                 reasons.append(f"detail_image_slot_ambiguous:{slot}")
 
-        if normalized in self.CONDITIONS:
+        if normalized in self.CONDITIONS - {"准新品"}:
             matches = self._slot_files(normalized)
             if len(matches) == 1:
                 files.insert(2, matches[0])
@@ -200,7 +200,8 @@ class DetailImageInspector:
             else:
                 reasons.append("condition_image_ambiguous")
 
-        if len(files) != 14:
+        expected_count = 13 if normalized == "准新品" else 14
+        if len(files) != expected_count:
             reasons.append("detail_image_count_invalid")
         return {
             "ok": not reasons,

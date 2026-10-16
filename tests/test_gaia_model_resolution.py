@@ -56,6 +56,57 @@ class GaiaModelResolutionTests(unittest.TestCase):
         self.assertFalse(result["success"])
         self.assertEqual([], result["selected_sku_ids"])
 
+    def test_partial_selection_keeps_only_unambiguous_phone_models(self):
+        rows = self.rows + [
+            ModelMappingRecord("甲牌", "Common X", "sku-a", "手机"),
+            ModelMappingRecord("乙牌", "Common X", "sku-b", "手机"),
+        ]
+        result = resolve_operator_models(rows, [
+            {"brand": "苹果", "model": "iPhone 17"},
+            {"model": "iPhone 18 Pro"},
+            {"model": "Common X"},
+            {"brand": "红米", "model": "K90"},
+        ], allow_partial=True)
+        self.assertTrue(result["success"])
+        self.assertTrue(result["partial"])
+        self.assertEqual(["sku-1", "sku-2", "sku-3"], result["selected_sku_ids"])
+        self.assertEqual(2, result["matched_model_count"])
+        self.assertEqual(2, result["skipped_model_count"])
+        self.assertEqual([(2, "not_found"), (3, "ambiguous")], [
+            (item["index"], item["reason"]) for item in result["skipped_models"]])
+
+    def test_partial_selection_still_blocks_without_safe_rows_or_above_sku_limit(self):
+        missing = resolve_operator_models(self.rows, [{"model": "iPhone 18 Pro"}], allow_partial=True)
+        self.assertFalse(missing["success"])
+        self.assertEqual([], missing["selected_sku_ids"])
+        rows = [ModelMappingRecord("苹果", "iPhone 17", str(n)) for n in range(2001)]
+        oversized = resolve_operator_models(rows, [
+            {"model": "iPhone 17"}, {"model": "iPhone 18 Pro"},
+        ], allow_partial=True)
+        self.assertFalse(oversized["success"])
+        self.assertEqual([], oversized["selected_sku_ids"])
+
+    def test_prior_platform_rejection_excludes_only_bad_sku_without_guessing_model(self):
+        result = resolve_operator_models(self.rows, [{"model": "iPhone 17"}],
+                                         rejected_skus={"sku-1": "old-batch"})
+        self.assertTrue(result["success"])
+        self.assertEqual(["sku-2"], result["selected_sku_ids"])
+        self.assertEqual(["sku-1"], result["results"][0]["excluded_sku_ids"])
+        self.assertEqual("old-batch", result["excluded_skus"][0]["rejected_batch_id"])
+
+        no_safe_variant = resolve_operator_models(self.rows, [{"model": "REDMI K90"}],
+                                                  allow_partial=True,
+                                                  rejected_skus={"sku-3": "old-batch"})
+        self.assertFalse(no_safe_variant["success"])
+        self.assertEqual("platform_rejected_sku", no_safe_variant["skipped_models"][0]["reason"])
+
+        ambiguous = [ModelMappingRecord("甲牌", "Common X", "sku-a", "手机"),
+                     ModelMappingRecord("乙牌", "Common X", "sku-b", "手机")]
+        collision = resolve_operator_models(ambiguous, [{"model": "Common X"}],
+                                            allow_partial=True,
+                                            rejected_skus={"sku-a": "old-batch"})
+        self.assertFalse(collision["success"], "quarantine must not resolve cross-brand ambiguity")
+
     def test_limit_is_expanded_sku_count_not_number_of_models(self):
         rows = [ModelMappingRecord("苹果", "iPhone 17", str(n)) for n in range(2001)]
         result = resolve_operator_models(rows, [{"model": "iPhone17"}])

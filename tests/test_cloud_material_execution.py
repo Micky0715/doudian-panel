@@ -462,6 +462,44 @@ class CloudMaterialExecutionTests(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertIn(files[0].file_token, {"a", "b"})
 
+    def test_exact_model_cover_can_be_under_variable_wrapper_depth(self):
+        blobs = {name: square_png(name.encode()) for name in ("main", "wrong")}
+        tree = {
+            "root": (folder("main-root", "抖音主图"),),
+            "main-root": (folder("shop", "129675602"),),
+            "shop": (folder("phone", "手机"),),
+            "phone": (folder("brand", "iQOO"),),
+            "brand": (folder("model", "iQOO Z10 Turbo+"),),
+            "model": (folder("operator", "运营图片"),),
+            "operator": (folder("covers", "本批次"),),
+            "covers": (
+                remote_file("main", "iQOO_iQOO Z10 Turbo+.png", len(blobs["main"])),
+                remote_file("wrong", "iQOO Z10 Turbo Pro.png", len(blobs["wrong"])),
+            ),
+        }
+        layout = FeishuMaterialLayout.from_mapping({"FEISHU_MAIN_PATH_LAYOUT": "shop_model"})
+        catalog = FeishuMaterialCatalog(FakeTreeDrive(blobs, tree), layout=layout)
+        files, _ = catalog._remote_main_files(
+            catalog._main_prefix("129675602", "iQOO"), "iQOO", "Z10 Turbo+",
+        )
+        self.assertEqual([item.file_token for item in files], ["main"])
+
+    def test_model_folder_does_not_use_unrelated_colour_as_main(self):
+        blobs = {"colour": square_png(b"colour")}
+        tree = {
+            "root": (folder("main-root", "抖音主图"),),
+            "main-root": (folder("shop", "129675602"),),
+            "shop": (folder("brand", "iQOO"),),
+            "brand": (folder("model", "iQOO Z10 Turbo+"),),
+            "model": (remote_file("colour", "云海白.png", len(blobs["colour"])),),
+        }
+        layout = FeishuMaterialLayout.from_mapping({"FEISHU_MAIN_PATH_LAYOUT": "shop_model"})
+        catalog = FeishuMaterialCatalog(FakeTreeDrive(blobs, tree), layout=layout)
+        files, _ = catalog._remote_main_files(
+            catalog._main_prefix("129675602", "iQOO"), "iQOO", "Z10 Turbo+",
+        )
+        self.assertEqual(files, ())
+
     def test_live_main_lookup_searches_duplicate_brand_branches_for_one_model_hit(self):
         blobs = {
             "main": square_png(b"main"),

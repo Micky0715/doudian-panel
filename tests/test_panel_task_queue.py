@@ -16,6 +16,14 @@ class PanelTaskQueueTests(unittest.TestCase):
             tasks[task.id] = task
         return tasks
 
+    def test_browser_profile_is_bound_to_shop_not_concurrency_slot(self):
+        a = panel_server.Task("636781", "test", 1, 0, engine="browser")
+        b = panel_server.Task("636781", "test", 1, 3, engine="browser")
+        other = panel_server.Task("208501840", "test", 1, 0, engine="browser")
+        self.assertEqual(a.profile_dir, b.profile_dir)
+        self.assertNotEqual(a.profile_dir, other.profile_dir)
+        self.assertTrue(a.profile_dir.endswith("/browser_profiles/listing/636781"))
+
     def test_fifth_shop_waits_and_is_dispatched_fifo_when_slot_frees(self):
         active = self._running_tasks()
         task_queue = deque()
@@ -44,6 +52,9 @@ class PanelTaskQueueTests(unittest.TestCase):
             self.assertEqual(0, queued.slot)
             self.assertIsNotNone(queued.started_at)
             popen.assert_called_once()
+            child_env = popen.call_args.kwargs["env"]
+            self.assertEqual("1", child_env["DP_STRICT_SHOP_PROFILE"])
+            self.assertEqual(queued.profile_dir, child_env["DP_PROFILE_DIR"])
             thread.return_value.start.assert_called_once()
             self.assertEqual([], list(task_queue))
 

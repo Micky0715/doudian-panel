@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import time
@@ -104,6 +105,18 @@ def _scroll_shop_dropdown(dropdown) -> dict:
     }""")
 
 
+def _upload_payload(output_path: Path, batch_id: str, expected_sha256: str) -> dict:
+    """Bind the selected browser File to one verified batch, not a shared name."""
+    payload_bytes = output_path.read_bytes()
+    if hashlib.sha256(payload_bytes).hexdigest() != expected_sha256:
+        raise RuntimeError("选择文件前盖亚输出文件哈希发生变化")
+    return {
+        "name": "gaia_%s.xlsx" % batch_id,
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "buffer": payload_bytes,
+    }
+
+
 def with_gaia_upload_form(
     *, work_dir: str, batch_id: str, shop_id: str, profile_dir: str,
     artifact_dir: str, login_wait: int = 120, headless: bool = False,
@@ -140,9 +153,10 @@ def with_gaia_upload_form(
         "shop_id": str(shop_id),
         "shop_name": shop_name,
         "create_count": 1,
-        "output_name": output_path.name,
+        "output_name": "gaia_%s.xlsx" % batch_id,
         "output_size": output_path.stat().st_size,
         "output_sha256": handoff["output_sha256"],
+        "generated_rows": handoff["generated_rows"],
         "file_attached": False,
         "confirm_enabled": False,
         "dialog_cancelled": False,
@@ -277,14 +291,19 @@ def with_gaia_upload_form(
             verify()
             with page.expect_file_chooser(timeout=8000) as chooser_info:
                 choose_file.click(timeout=8000)
-            chooser_info.value.set_files(str(output_path))
+            # The canonical file remains hash-pinned at its batch path. Give the
+            # browser widget a unique filename so the visible upload-list item
+            # cannot be confused with another batch's gaia_upload.xlsx.
+            chooser_info.value.set_files(_upload_payload(
+                output_path, batch_id, result["output_sha256"],
+            ))
             result["attachment_readback"] = wait_for_attachment(
-                page, dialog, expected_name=output_path.name, expected_size=result["output_size"],
+                page, dialog, expected_name=result["output_name"], expected_size=result["output_size"],
                 batch_id=batch_id, phase="after_attach",
                 check_cancelled=checkpoint,
             )
             result["file_attached"] = True
-            result["attached_filename"] = output_path.name
+            result["attached_filename"] = result["output_name"]
 
             # Read only. There is intentionally no click call on this locator.
             confirm = dialog.get_by_role("button", name=re.compile(r"确\s*定")).filter(visible=True)
@@ -297,7 +316,7 @@ def with_gaia_upload_form(
                 "upload_preflight_file_attached",
                 shop=selected_text,
                 quantity="1",
-                filename=output_path.name,
+                filename=result["output_name"],
                 confirm_enabled=result["confirm_enabled"],
                 screenshot=result["screenshot_ready"],
                 submitted=False,

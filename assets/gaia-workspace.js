@@ -17,6 +17,39 @@ window.initGaiaWorkspace = function ({$, toast}) {
   const handoffBtn = $('#gaiaHandoffCheckBtn');
   const cancelBtn = $('#gaiaCancelBatchBtn');
   const downloadLink = $('#gaiaDownloadFile');
+  $('#gaiaDiagnoseResultBtn')?.addEventListener('click', async () => {
+    const target = $('#gaiaResultDiagnosis');
+    const file = $('#gaiaResultFile')?.files?.[0];
+    if (!generatedBatchId || !file) {
+      target.textContent = '请先选择本批盖亚结果表；当前页面没有批次时，请勿把结果关联到其他批次。';
+      return;
+    }
+    const form = new FormData();
+    form.append('shop_id', $('#gaiaShop')?.value || '');
+    form.append('file', file);
+    target.textContent = '正在只读核对结果表…';
+    const response = await fetch('/api/gaia/batches/' + generatedBatchId + '/result-diagnosis', {
+      method: 'POST', body: form
+    }).then(r => r.json()).catch(() => ({success: false, message: '结果表读取失败'}));
+    if (!response.success) {
+      target.textContent = response.message || '结果表与当前批次无法核对';
+      return;
+    }
+    const report = response.diagnosis;
+    const roots = report.primary_errors.map(item => {
+      const snapshot = item.goods_in_mapping_snapshot === false
+        ? '；本批历史映射未收录此货品，请核对盖亚当前货品和规则价格' : '';
+      return `第 ${item.excel_row} 行：货品 ${item.goods_id || '未知'}，标品 ${item.standard_sku_id}`
+        + `，成色 ${item.quality_id}：${item.error}${snapshot}`;
+    });
+    const coverage = report.pair_coverage === 'partial'
+      ? `结果表缺少本批 ${report.missing_sku_quality_pairs} 个标品成色组合，不能确认覆盖全部上传行。`
+      : '';
+    target.textContent = `结果表 ${report.result_rows} 行，首发错误 ${roots.length} 行，连带错误 `
+      + `${report.cascade_error_count} 行。${roots.join('；') || '未记录明确首发错误'}。`
+      + coverage + (report.next_step || '')
+      + ' 结果表没有本地批次唯一标识，商品是否最终创建仍需平台回查。';
+  });
   const priceTemplate = $('#gaiaPriceTemplate');
   const priceStatus = $('#gaiaPriceUpliftStatus');
   const priceResult = $('#gaiaPriceResult');
@@ -24,18 +57,25 @@ window.initGaiaWorkspace = function ({$, toast}) {
   const priceResume = $('#gaiaPriceResume');
   const activityField = $('#gaiaActivityField');
   const activityName = $('#gaiaActivityName');
-  const activityDraftKey = 'gaia-activity-name-by-shop-term';
+  const activityDraftKey = 'gaia-activity-name-by-shop-scene-terms';
   let activityDrafts = {};
   try {
     const stored = JSON.parse(sessionStorage.getItem(activityDraftKey) || '{}');
     if (stored && typeof stored === 'object' && !Array.isArray(stored)) activityDrafts = stored;
   } catch (_) {}
   let activityDraftId = '';
+  function selectedPayment() {
+    return Array.from($('#gaiaPaymentOptions')?.querySelectorAll('input[type="checkbox"]:checked') || [],
+      input => input.value);
+  }
+  function selectedInstallmentTerms() {
+    return selectedPayment().filter(value => value !== 'full').map(Number).sort((a, b) => a - b);
+  }
   function syncActivityField() {
     const shopId = $('#gaiaShop')?.value || '';
-    const term = $('#gaiaPriceInstallments')?.value || 'full';
-    const applicable = $('#gaiaScene')?.value === '2' && (term === '12' || term === '24');
-    const nextId = applicable && shopId ? shopId + ':' + term : '';
+    const terms = selectedInstallmentTerms();
+    const applicable = terms.length > 0;
+    const nextId = applicable && shopId ? [shopId, $('#gaiaScene')?.value, terms.join('+')].join(':') : '';
     if (activityField) activityField.hidden = !applicable;
     if (activityName) {
       activityName.disabled = !applicable;
@@ -74,8 +114,7 @@ window.initGaiaWorkspace = function ({$, toast}) {
   }
   function pricePayload() {
     return {shop_id: $('#gaiaShop')?.value || '',
-      installments: $('#gaiaPriceInstallments')?.value === 'full'
-        ? null : Number($('#gaiaPriceInstallments')?.value || 12)};
+      installments: selectedInstallmentTerms().at(-1) ?? null};
   }
   function showPriceError(message) {
     pricePreparedKey = '';
@@ -116,7 +155,15 @@ window.initGaiaWorkspace = function ({$, toast}) {
     priceResult.textContent = '已核实 ' + response.preview.count + ' 个抖店商品 ID；目标店铺 '
       + payload.shop_id + '，规则“' + response.preview.rule_name + '”。“开始执行”会自动导入；也可下载核对。';
   });
-  $('#gaiaPriceInstallments')?.addEventListener('change', () => {
+  $('#gaiaPaymentOptions')?.addEventListener('change', event => {
+    const changed = event?.target;
+    const inputs = Array.from($('#gaiaPaymentOptions')?.querySelectorAll('input[type="checkbox"]') || []);
+    if (changed?.checked && changed.value === 'full') {
+      inputs.filter(input => input.value !== 'full').forEach(input => {input.checked = false;});
+    } else if (changed?.checked) {
+      const full = inputs.find(input => input.value === 'full');
+      if (full) full.checked = false;
+    }
     showPriceError(pricePayload().installments === null
       ? '已选择全款：照常执行盖亚发品，跳过分期规则导入。'
       : '分期数已变更，请重新检查本批商品 ID。');
@@ -153,7 +200,7 @@ window.initGaiaWorkspace = function ({$, toast}) {
       const accepted = batch.state === 'gaia_accepted';
       status.textContent = stopStatus.kind === 'uncertain' ? '停止待确认'
         : batch.state === 'cancelled' ? (busy ? '正在停止' : '已停止')
-        : busy ? '盖亚处理中' : accepted ? '盖亚已受理' : '请查看执行结果';
+        : busy ? '盖亚处理中' : accepted ? '盖亚商品已核实' : '请查看执行结果';
       status.className = 'status-chip ' + (busy || batch.state === 'cancelled' ? 'neutral' : accepted ? 'ready' : 'error');
     }
     const pricePhase = batch?.gaia_receipt?.price_phase;
@@ -292,7 +339,8 @@ window.initGaiaWorkspace = function ({$, toast}) {
   }
 
   function currentModelSignature() {
-    return JSON.stringify({mapping_version_id: mappingVersionId, models: operatorModelRows()});
+    return JSON.stringify({mapping_version_id: mappingVersionId, models: operatorModelRows(),
+      quality_labels: selectedQualities()});
   }
 
   async function resolveOperatorModels(silent) {
@@ -312,7 +360,8 @@ window.initGaiaWorkspace = function ({$, toast}) {
     resultBox.textContent = '正在使用当前国行映射版本匹配 ' + rows.length + ' 个型号…';
     const res = await fetch('/api/gaia/model-mappings/resolve-batch', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({mapping_version_id: mappingVersionId, models: rows})
+      body: JSON.stringify({mapping_version_id: mappingVersionId, models: rows,
+        quality_labels: selectedQualities(), allow_partial: true})
     }).then(async response => {
       try { return await response.json(); }
       catch (e) { return {success: false, message: '型号匹配响应无效'}; }
@@ -324,7 +373,13 @@ window.initGaiaWorkspace = function ({$, toast}) {
       if (item.unique_model) {
         const hit = item.candidates[0];
         return '✓ ' + prefix + ' → ' + hit.brand + ' ' + hit.model + ' · '
-          + item.candidate_count + ' 个国行标品 ID 全部填入';
+          + item.candidate_count + ' 个国行标品 ID 填入'
+          + (item.excluded_sku_ids?.length
+            ? '；排除盖亚此前拒绝的 ID：' + item.excluded_sku_ids.join('、') : '');
+      }
+      if (item.excluded_sku_ids?.length && !item.candidate_count) {
+        return '✕ ' + prefix + ' → 所有标品 ID 均曾被盖亚明确拒绝：'
+          + item.excluded_sku_ids.join('、');
       }
       if (item.candidate_count) {
         const names = item.candidates.slice(0, 4).map(hit =>
@@ -383,8 +438,10 @@ window.initGaiaWorkspace = function ({$, toast}) {
       mapping_version_id: mappingVersionId,
       selected_sku_ids: selectedSkuIds,
       models: operatorModelRows(),
+      allow_partial: true,
       shop_id: $('#gaiaShop')?.value || '',
       scene: $('#gaiaScene')?.value || '2',
+      quality_link: $('#gaiaQualityLink')?.value || '1',
       quality_labels: selectedQualities(),
       create_count: 1
     };
@@ -395,16 +452,34 @@ window.initGaiaWorkspace = function ({$, toast}) {
       '第 ' + row.excel_row + ' 行  ' + row.brand + ' ' + row.model
       + '  ·  标品 ' + row.values[3] + '  ·  成色 ID ' + row.values[4]
       + '  ·  策略 ' + (row.values[6] || '留空'));
+    const skipped = preview.skipped_goods_combinations || [];
+    const skippedLines = skipped.slice(0, 20).map(item =>
+      '跳过 标品 ' + item.standard_sku_id + ' · ' + item.quality_label
+      + '：' + (item.reason === 'gaia_rejected' ? '盖亚此前明确拒绝此组合' : '原表没有对应成色的货品 ID'));
+    const fileCount = Number(preview.file_count || 1);
+    const liveCounts = (preview.live_goods_snapshot || []).map(item =>
+      item.brand + ' ' + item.model + '：盖亚当前 ' + item.total_count + ' 个货品');
+    const fileLines = (preview.files || []).map(item =>
+      '第 ' + item.index + ' 份：' + item.row_count + ' 行 · ' + (item.brand || item.models?.[0] || '未知型号')
+      + (item.model ? ' ' + item.model : '')
+      + (item.chunk_total > 1 ? ' · 该型号第 ' + item.chunk_index + '/' + item.chunk_total + ' 份' : ''));
+    const splitText = fileCount > 1
+      ? ' · 按盖亚实时货品量自动分成 ' + fileCount + ' 份依次上传' : '';
     $('#gaiaGeneratedPreview').textContent =
-      '共 ' + preview.row_count + ' 行 · 成色 ' + (preview.quality_labels || [preview.quality_label]).join('、')
+      '共 ' + preview.row_count + ' 行 · 质检链接 ' + (preview.quality_link === '0' ? '否（0）' : '是（1）')
+      + ' · 成色 ' + (preview.quality_labels || [preview.quality_label]).join('、')
       + '（ID ' + (preview.quality_ids || [preview.quality_id]).join('、') + '）· 映射版本 ' + preview.mapping_version_id.slice(0, 8)
-      + '\n' + lines.join('\n') + (preview.truncated ? '\n仅展示前 20 行；下载文件包含全部行。' : '');
+      + splitText + '\n' + lines.join('\n')
+      + (liveCounts.length ? '\n实时货品量：' + liveCounts.join('；') : '')
+      + (fileLines.length ? '\n分表计划：\n' + fileLines.join('\n') : '')
+      + (preview.truncated ? '\n仅展示前 20 行；批次记录包含全部行。' : '')
+      + (fileCount > 1 ? '\n系统将自动逐份上传并逐份回查；当前下载链接仅对应第 1 份。' : '')
+      + (skipped.length ? '\n已跳过 ' + skipped.length + ' 个缺少对应货品的标品/成色组合：\n'
+        + skippedLines.join('\n') + (skipped.length > 20 ? '\n仅展示前 20 个，批次记录包含全部。' : '') : '');
   }
 
   function refreshGaiaReadiness() {
     syncActivityField();
-    const installment = $('#gaiaPriceInstallments');
-    if (installment) installment.disabled = $('#gaiaScene')?.value === '1';
     const sourceReady = Boolean(selectedSourcePath);
     const mappingReady = Boolean(mappingVersionId);
     const qualities = selectedQualities();
@@ -631,8 +706,12 @@ window.initGaiaWorkspace = function ({$, toast}) {
           toast('请先选择目标店铺、成色，并填写手机型号', true);
           return;
         }
-        const needsActivity = $('#gaiaScene')?.value === '2'
-          && ['12', '24'].includes($('#gaiaPriceInstallments')?.value);
+        const payment = selectedPayment();
+        if (payment.length === 0 || (payment.includes('full') && payment.length > 1)) {
+          toast('请选择全款或一个及以上分期期数；全款不能与分期同选', true);
+          return;
+        }
+        const needsActivity = selectedInstallmentTerms().length > 0;
         if (needsActivity && !activityName?.value?.trim()) {
           toast('选择分期时，请填写抖店活动卡片的完整名称', true);
           activityName?.focus();
@@ -696,7 +775,10 @@ window.initGaiaWorkspace = function ({$, toast}) {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({...payload,
               expected_source_sha256: previewMeta.source_sha256,
-              expected_quality_ids: previewMeta.quality_ids})
+              expected_quality_link: previewMeta.quality_link,
+              expected_quality_ids: previewMeta.quality_ids,
+              expected_inventory_probe_token: previewMeta.inventory_probe_token,
+              expected_split_plan_sha256: previewMeta.split_plan_sha256})
           }).then(r => r.json()).catch(() => ({success: false, message: '生成请求失败'}));
           if (!generated.success) throw new Error(generated.message || '生成失败');
           generatedBatchId = generated.batch.id;
@@ -840,12 +922,16 @@ window.initGaiaWorkspace = function ({$, toast}) {
     }
   }).catch(() => {});
   fetch('/api/gaia/capabilities').then(r => r.json()).then(res => {
-    gaiaSubmitReady = Boolean(res.success && res.features?.gaia_submit);
+    gaiaSubmitReady = Boolean(res.success && res.features?.gaia_submit
+      && res.contracts?.payment_terms_policy === 'explicit_terms_v1');
     uploadController.setEnabled(gaiaSubmitReady);
     gaiaBackendReady = res.success
       && res.contracts?.mapping_policy === 'explicit_mainland_only_v2';
     refreshGaiaBackendControls();
-    if (!gaiaBackendReady && !safeMainlandMappingReady) {
+    if (!gaiaSubmitReady && gaiaBackendReady) {
+      $('#gaiaGenerationStatus').textContent = '等待面板服务重启以启用多选分期';
+      $('#gaiaGenerationStatus').className = 'status-chip neutral';
+    } else if (!gaiaBackendReady && !safeMainlandMappingReady) {
       $('#gaiaGenerationStatus').textContent = '等待面板服务重启';
       $('#gaiaGenerationStatus').className = 'status-chip neutral';
     }
@@ -854,7 +940,7 @@ window.initGaiaWorkspace = function ({$, toast}) {
     refreshGaiaBackendControls();
   });
 
-  for (const selector of ['#gaiaShop', '#gaiaScene', '#gaiaCreateCount']) {
+  for (const selector of ['#gaiaShop', '#gaiaScene', '#gaiaQualityLink', '#gaiaCreateCount']) {
     $(selector)?.addEventListener('change', refreshGaiaReadiness);
     $(selector)?.addEventListener('input', refreshGaiaReadiness);
   }
@@ -892,7 +978,10 @@ window.initGaiaWorkspace = function ({$, toast}) {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({...payload,
         expected_source_sha256: previewMeta.source_sha256,
-        expected_quality_ids: previewMeta.quality_ids})
+        expected_quality_link: previewMeta.quality_link,
+        expected_quality_ids: previewMeta.quality_ids,
+        expected_inventory_probe_token: previewMeta.inventory_probe_token,
+        expected_split_plan_sha256: previewMeta.split_plan_sha256})
     }).then(r => r.json()).catch(() => ({success: false, message: '生成请求失败'}));
     if (!res.success) {
       previewKey = '';

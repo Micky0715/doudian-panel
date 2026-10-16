@@ -31,6 +31,19 @@ class GaiaTemplateContractError(ValueError):
     """Raised when a row cannot be proven valid for the Gaia template."""
 
 
+def aggregate_mark_for_index(index: int) -> str:
+    """Return A..Z, AA..AZ, etc. for a zero-based model position."""
+    if index < 0:
+        raise GaiaTemplateContractError("型号序号不能为负数")
+    mark = ""
+    while True:
+        index, remainder = divmod(index, 26)
+        mark = chr(ord("A") + remainder) + mark
+        if index == 0:
+            return mark
+        index -= 1
+
+
 def selection_strategy_for_category(category: str) -> str:
     """Only the exact phone category receives the confirmed strategy string."""
     return PHONE_SELECTION_STRATEGY if str(category or "").strip() == "手机" else ""
@@ -44,6 +57,8 @@ class GaiaTemplateRow:
     standard_sku_id: str
     dy_quality_id: str
     category: str
+    aggregate_mark: str = GAIA_FIXED_AGGREGATE_MARK
+    quality_link: str = GAIA_FIXED_QUALITY_LINK
 
     def __post_init__(self) -> None:
         if str(self.scene) not in {"1", "2"}:
@@ -52,13 +67,17 @@ class GaiaTemplateRow:
             raise GaiaTemplateContractError("缺少标品ID（standardSkuId）")
         if not str(self.dy_quality_id or "").strip():
             raise GaiaTemplateContractError("缺少抖音成色ID（dyQualityId）")
+        if not self.aggregate_mark or not self.aggregate_mark.isascii() or not self.aggregate_mark.isalpha() or not self.aggregate_mark.isupper():
+            raise GaiaTemplateContractError("聚合标识必须是大写英文字母")
+        if self.quality_link not in {"0", "1"}:
+            raise GaiaTemplateContractError("是否质检链接只能填 1（是）或 0（否）")
 
     def values(self) -> tuple[str, ...]:
         """Return only writable A:H values. Template notes are never copied as data."""
         return (
             str(self.scene),
-            GAIA_FIXED_AGGREGATE_MARK,
-            GAIA_FIXED_QUALITY_LINK,
+            self.aggregate_mark,
+            self.quality_link,
             str(self.standard_sku_id).strip(),
             str(self.dy_quality_id).strip(),
             "",

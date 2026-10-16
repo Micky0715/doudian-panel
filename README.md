@@ -2,6 +2,8 @@
 
 面向二手数码商品上架的运营面板，包含盖亚 Excel 铺货、抖店草稿处理、云盘素材匹配、并发队列及任务进度与报错查看。
 
+接手项目请先阅读[项目交接手册](项目交接手册.md)和[问题与处理复盘](接手以来问题与处理复盘.md)。
+
 ## 前端设计预览
 
 以「把每一次上新，稳稳接住」为首页主题，将品牌人物与日常运营操作放在同一个工作台中。
@@ -78,6 +80,7 @@ DP_HOST=127.0.0.1 python panel_server.py
 ## 生产配置注意
 
 - `env.local`、`storage_state.json`、`chrome_user_data*`、`gaia_browser_data` 和 `panel_data` 属于部署环境私有数据，不提交 Git。
+- 抖店浏览器登录按店铺隔离在 `panel_data/browser_profiles/listing/<店铺短ID>/`，上架和盖亚分期共用同一店铺登录资料。首次使用或登录过期时，在运行面板的电脑上执行 `python3 -m scripts.doudian_browser_login_window --shop-id 636781 --purpose listing`，确认当前短 ID 后关闭窗口。其他店铺替换命令中的短 ID；旧 `cpay` 目录不会自动复制或覆盖已登录资料。同一店铺的上架与分期浏览器任务不可同时占用该资料。
 - 盖亚需要发品模板、价格映射表以及浏览器登录。模板和映射表由面板保存为已校验版本，日常操作不依赖服务器下载目录；更新文件可在盖亚“高级设置”上传。
 - 盖亚实际提交开关为 `config/gaia_execution.json`；即使只准备验证界面，也应核对该开关，不要误点击“开始执行”。
 - 抖店示例默认关闭真实发布，且界面默认“仅保存草稿”。开启 `DP_API_MEDIA_PUBLISH_ENABLED=1` 前先完成单件草稿验证。

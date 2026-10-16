@@ -8,7 +8,7 @@ from typing import Any, Mapping
 from brand_model_rules import platform_brand_for_title
 
 
-_CONDITION_RE = re.compile(r"(99新|95新|90新|9新|8成新|9成新)", re.I)
+_CONDITION_RE = re.compile(r"(准新品|99新|95新|90新|9新|8成新|9成新)", re.I)
 
 
 def source_title(detail: Mapping[str, Any]) -> str:

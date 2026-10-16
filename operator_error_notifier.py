@@ -12,10 +12,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
-from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -61,6 +61,29 @@ def _safe_text(value: Any, limit: int = 240) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _operator_reason(value: Any) -> str:
+    """Turn worker diagnostics into a short, actionable Chinese group message.
+
+    The original exception is kept in task logs; the chat alert is for the
+    operator and must not expose Python paths or English exception classes.
+    """
+    raw = _safe_text(value, 500)
+    lowered = raw.casefold()
+    if "at least two white-background images are required" in lowered:
+        return "白底图不足 2 张，请补图后重试"
+    if "missing main image requires three distinct uploadable white images" in lowered:
+        return "缺少主图，且可用白底图不足 3 张，请补图后重试"
+    if "invalid_ip" in lowered or "请求来源ip不可信" in raw:
+        return "接口 IP 未加入白名单，请联系管理员"
+    if "goodsid" in lowered and ("未找到" in raw or "missing" in lowered):
+        return "货品映射未找到，请核对商品 ID 和成色"
+    # Keep a useful Chinese business error, but remove technical prefixes.
+    if re.search(r"[\u4e00-\u9fff]", raw):
+        cleaned = re.sub(r"^.*?(?:Error|Exception):\s*", "", raw, count=1)
+        return _safe_text(cleaned, 100)
+    return "处理失败，请在面板查看详细日志"
+
+
 def should_notify(task: Mapping[str, Any], errors: Sequence[Mapping[str, Any]]) -> bool:
     state = str(task.get("state") or "")
     return state in TERMINAL_STATES and (bool(errors) or state == "error")
@@ -84,44 +107,36 @@ def build_task_error_message(
         '<at user_id="%s">%s</at>' % (operator_open_id, operator_name)
         if operator_open_id.startswith("ou_") else operator_name
     )
-    title = "【链路测试｜不是实际报错】" if test_message else "【自动上架任务报错】"
-    state_labels = {"done": "任务结束（存在失败项）", "stopped": "任务已停止", "error": "任务异常退出"}
+    title = "【通知测试｜无需处理】" if test_message else "【上架异常】"
+    state_labels = {"done": "已结束", "stopped": "已停止", "error": "已中断"}
     progress = task.get("progress") if isinstance(task.get("progress"), Mapping) else {}
     lines = [
         title,
         "店铺：%s（%s）" % (shop_name, shop_id or "无短 ID"),
         "负责人：%s" % mention,
-        "任务：%s｜%s｜%s" % (
-            _safe_text(task.get("id") or "未知任务", 80),
-            "API" if task.get("engine") == "api_media" else "浏览器",
-            "仅保存草稿" if task.get("save_only") else "发布",
-        ),
-        "状态：%s" % state_labels.get(str(task.get("state") or ""), _safe_text(task.get("state"))),
-        "结果：成功 %s｜失败 %s｜跳过 %s｜报错 %d" % (
+        "本次%s：%s；成功 %s，失败 %s，跳过 %s" % (
+            "存草稿" if task.get("save_only") else "上架",
+            state_labels.get(str(task.get("state") or ""), "已结束"),
             progress.get("success", 0), progress.get("failed", 0),
-            progress.get("skipped", 0), len(errors),
+            progress.get("skipped", 0),
         ),
     ]
     if test_message:
-        lines.append("说明：仅验证 CLI、群聊、店铺负责人映射和 @提醒链路。")
+        lines.append("仅测试群通知和 @提醒，没有实际上架异常。")
     if errors:
-        counts = Counter(_safe_text(row.get("error_type") or "其他", 80) for row in errors)
-        lines.append("分类：" + "；".join("%s ×%d" % item for item in counts.items()))
-        limit = max(1, min(int(config.get("max_error_details") or 10), 30))
-        lines.append("明细：")
+        limit = max(1, min(int(config.get("max_error_details") or 10), 10))
         for index, row in enumerate(errors[:limit], start=1):
-            label = _safe_text(row.get("name") or row.get("model") or row.get("product_id") or "未知商品", 100)
-            product_id = _safe_text(row.get("product_id") or "", 40)
-            error_type = _safe_text(row.get("error_type") or "其他", 80)
-            reason = _safe_text(row.get("reason") or task.get("message") or "未提供原因")
-            identity = "%s（%s）" % (label, product_id) if product_id and product_id != label else label
-            lines.append("%d. %s｜%s：%s" % (index, identity, error_type, reason))
+            label = _safe_text(row.get("name") or row.get("model") or row.get("product_id") or "未知商品", 70)
+            reason = _operator_reason(row.get("reason") or task.get("message"))
+            lines.append("%d. %s：%s" % (index, label, reason))
         if len(errors) > limit:
-            lines.append("其余 %d 条请在面板“查看所有报错”中查看。" % (len(errors) - limit))
+            lines.append("另有 %d 条，请在面板查看。" % (len(errors) - limit))
     elif str(task.get("state") or "") == "error":
-        lines.append("原因：%s" % _safe_text(task.get("message") or "任务进程异常退出"))
+        lines.append("原因：%s" % _operator_reason(task.get("message") or "任务进程异常退出"))
     if not owner:
-        lines.append("配置提醒：该店铺尚未配置运营负责人，请管理员补充映射。")
+        lines.append("该店铺未配置负责人，请联系管理员。")
+    if not test_message:
+        lines.append("详情请在面板查看本次任务。")
     return "\n".join(lines)
 
 

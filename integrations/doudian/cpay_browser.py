@@ -13,6 +13,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 from app.gaia_listing.application.price_uplift import PRICE_RULE_NAMES
+from .browser_profiles import has_browser_login
 from .cpay_terms import required_cpay_terms
 
 
@@ -23,11 +24,11 @@ class CpayEnrollmentError(RuntimeError):
     pass
 
 
-def validate_request(shop_id: str, installments: int, activity_name: str, product_ids: list[str]):
+def validate_request(shop_id: str, installments, activity_name: str, product_ids: list[str]):
     try:
         required_cpay_terms(installments)
     except (ValueError, TypeError) as exc:
-        raise CpayEnrollmentError("分期免息仅支持 12 期或 24 期") from exc
+        raise CpayEnrollmentError("分期免息只能选择 6、12、24 期") from exc
     if str(shop_id) not in PRICE_RULE_NAMES:
         raise CpayEnrollmentError("分期免息店铺 ID 不在已核实规则中")
     if not isinstance(activity_name, str) or not activity_name.strip() or "全店报名" in activity_name:
@@ -120,8 +121,11 @@ def _wait_create_page(context, page):
 def probe_cpay_session(profile_dir: str, shop_id: str, activity_name: str) -> dict:
     """Read-only preflight before Gaia creates products or imports a price rule."""
     profile = Path(profile_dir).resolve()
-    if not (profile / "Default" / "Cookies").is_file():
-        raise CpayEnrollmentError("分期专用抖店浏览器尚未登录；请先完成一次登录")
+    if not has_browser_login(profile):
+        raise CpayEnrollmentError(
+            f"店铺 {shop_id} 的抖店专用浏览器尚未登录；请在执行电脑运行 "
+            f"python3 -m scripts.doudian_browser_login_window --shop-id {shop_id} --purpose listing"
+        )
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
             user_data_dir=str(profile), headless=False,
@@ -160,7 +164,7 @@ def _select_product(page, product_id: str):
     _only(row.get_by_role("checkbox"), f"商品 {product_id} 勾选框").check()
 
 
-def enroll_cpay_batch(*, profile_dir: str, batch_id: str, shop_id: str, installments: int,
+def enroll_cpay_batch(*, profile_dir: str, batch_id: str, shop_id: str, installments,
                       activity_name: str, product_ids: list[str], before_submit=None) -> dict:
     """Attempt once. The caller persists intent before the irreversible submit."""
     activity_name, product_ids = validate_request(shop_id, installments, activity_name, product_ids)
@@ -179,13 +183,13 @@ def enroll_cpay_batch(*, profile_dir: str, batch_id: str, shop_id: str, installm
             _only(card.get_by_role("button", name="新建活动", exact=True), "新建活动按钮").click()
             create = _wait_create_page(context, page)
             _check_shop(create, shop_id)
-            merchant_activity_name = f"盖亚-{shop_id}-{installments}期-{batch_id[:8]}"
+            required = required_cpay_terms(installments)
+            merchant_activity_name = f"盖亚-{shop_id}-{max(required)}期-{batch_id[:8]}"
             _only(create.get_by_placeholder("请输入活动名称，不超过25个字"),
                   "商家活动名称").fill(merchant_activity_name)
             _only(create.get_by_text("部分商品参与", exact=True).filter(visible=True), "部分商品参与").click()
             if create.get_by_role("button", name="添加商品", exact=True).count() != 1:
                 raise CpayEnrollmentError("未切换到部分商品参与；禁止创建全店活动")
-            required = required_cpay_terms(installments)
             for term in (3, 6, 12, 24):
                 checkbox = _only(create.get_by_role("checkbox", name=re.compile(rf"^{term}期免息")), f"{term}期免息")
                 if term in required:
@@ -217,7 +221,7 @@ def enroll_cpay_batch(*, profile_dir: str, batch_id: str, shop_id: str, installm
             # acknowledgement; the caller must treat the membership as unverified.
             feedback = create.locator("[role='alert'], .ant-message, .semi-toast").filter(visible=True).all_inner_texts()
             return {"outcome": "submitted_unverified", "feedback": "；".join(feedback)[:300],
-                    "shop_id": str(shop_id), "installments": int(installments),
+                    "shop_id": str(shop_id), "installment_terms": list(required),
                     "activity_name": activity_name, "merchant_activity_name": merchant_activity_name,
                     "product_ids": product_ids}
         finally:

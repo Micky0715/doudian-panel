@@ -144,6 +144,9 @@ class PriceUpliftTests(unittest.TestCase):
         self.assertEqual('拍拍严选二手手机【5576543】—24期', PRICE_RULE_NAMES['5576543'][24])
         self.assertEqual('返航新生二手手机旗舰店【208501840】-12期', PRICE_RULE_NAMES['208501840'][12])
         self.assertEqual({12: '4.3%', 24: '9%'}, PRICE_RULE_RATES['7970406'])
+        self.assertTrue(rule_name_matches_shop_term('直播间-运营店【7970406】-6期', '7970406', 6, 1))
+        self.assertFalse(rule_name_matches_shop_term('直播间-运营店【7970406】-6期', '7970406', 6, 2))
+        self.assertFalse(rule_name_matches_shop_term('运营店【7970406】-6期', '7970406', 6, 1))
 
     def test_only_reconciled_same_shop_batch_is_ready(self):
         batch = {'id': 'abc123', 'shop_id': '7970406', 'scene': 2, 'state': 'gaia_accepted',
@@ -154,11 +157,9 @@ class PriceUpliftTests(unittest.TestCase):
         batch['state'] = 'doudian_drafts_matched'
         with self.assertRaisesRegex(PriceUpliftError, '店铺'):
             prepare_price_uplift(batch, shop_id='156450040', installments=12)
-        with self.assertRaisesRegex(PriceUpliftError, '分期'):
-            prepare_price_uplift(batch, shop_id='7970406', installments=6)
+        self.assertEqual(6, prepare_price_uplift(batch, shop_id='7970406', installments=6)['installments'])
         batch['scene'] = 1
-        with self.assertRaisesRegex(PriceUpliftError, '直播货架'):
-            prepare_price_uplift(batch, shop_id='7970406', installments=12)
+        self.assertEqual(12, prepare_price_uplift(batch, shop_id='7970406', installments=12)['installments'])
         batch['scene'] = 2
         prepared = prepare_price_uplift(batch, shop_id='7970406', installments=24)
         self.assertEqual(2, prepared['count'])
@@ -171,7 +172,7 @@ class PriceUpliftTests(unittest.TestCase):
         with self.assertRaisesRegex(PriceUpliftError, '重复'):
             prepare_price_uplift(batch, shop_id='7970406', installments=12)
         batch['shop_id'] = '999999999'
-        with self.assertRaisesRegex(PriceUpliftError, '经核实'):
+        with self.assertRaisesRegex(PriceUpliftError, '授权店铺'):
             prepare_price_uplift(batch, shop_id='999999999', installments=12)
 
     def test_template_copies_a_column_and_preserves_b_header(self):

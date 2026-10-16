@@ -29,6 +29,7 @@ from collections import deque
 from flask import Flask, Response, jsonify, request, send_from_directory
 
 from operator_error_notifier import notify_task_errors
+from integrations.doudian.browser_profiles import browser_profile_for_shop
 
 WORK_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, WORK_DIR)
@@ -67,7 +68,6 @@ RUNNER = os.path.join(WORK_DIR, "panel_runner.py")
 API_MEDIA_RUNNER = os.path.join(WORK_DIR, "panel_api_media_runner.py")
 LOG_BUFFER_SIZE = 3000                # 每个任务在内存中保留的日志行数
 
-PROFILE_ROOT = WORK_DIR
 PROCESSED_DIR = os.path.join(WORK_DIR, "panel_data", "processed")
 RUNLOG_DIR = os.path.join(WORK_DIR, "panel_data", "logs")
 STOP_DIR = os.path.join(WORK_DIR, "panel_data", "stop")
@@ -76,15 +76,8 @@ for _d in (PROCESSED_DIR, RUNLOG_DIR, STOP_DIR):
 
 LEGACY_PROCESSED = os.path.join(WORK_DIR, "processed_products.json")
 
-# 并行槽位 → Chrome 用户数据目录。
-# 槽位 1 复用原有目录（已有登录态，无需重新扫码）；槽位 2/3/4 首次使用需各扫码一次。
-_PROFILE_SUFFIX = "_win" if os.name == "nt" else ""
-PROFILE_SLOTS = [
-    os.path.join(PROFILE_ROOT, "chrome_user_data%s" % _PROFILE_SUFFIX),
-    os.path.join(PROFILE_ROOT, "chrome_user_data_2%s" % _PROFILE_SUFFIX),
-    os.path.join(PROFILE_ROOT, "chrome_user_data_3%s" % _PROFILE_SUFFIX),
-    os.path.join(PROFILE_ROOT, "chrome_user_data_4%s" % _PROFILE_SUFFIX),
-][:MAX_PARALLEL]
+def listing_profile_for_shop(shop_id):
+    return str(browser_profile_for_shop(WORK_DIR, "listing", shop_id))
 
 
 # ========== 店铺映射（从原脚本读取，避免重复维护） ==========
@@ -165,7 +158,7 @@ class Task(object):
         self.engine = engine
         self.media_folder_id = str(media_folder_id or "")
         self.slot = slot
-        self.profile_dir = PROFILE_SLOTS[slot] if slot is not None else ""
+        self.profile_dir = listing_profile_for_shop(shop_id) if engine == "browser" else ""
         self.state = "starting" if slot is not None else "queued"
         self.message = "" if slot is not None else "等待执行槽位"
         self.created_at = time.time()
@@ -346,7 +339,7 @@ def _launch_task(task):
     """Launch one task that already owns a slot. Queue selection lives elsewhere."""
     if task.slot is None:
         raise RuntimeError("任务尚未分配执行槽位")
-    task.profile_dir = PROFILE_SLOTS[task.slot]
+    task.profile_dir = listing_profile_for_shop(task.shop_id) if task.engine == "browser" else ""
     task.started_at = time.time()
     task.queue_position = None
     if task.engine == "browser":
@@ -382,6 +375,7 @@ def _launch_task(task):
         "DP_PRODUCT_IMAGE_ROOT": env.get("DP_PRODUCT_IMAGE_ROOT", default_image_root),
         "DP_WHITE_IMAGE_LIBRARY": env.get("DP_WHITE_IMAGE_LIBRARY", default_white_library),
         "DP_PROFILE_DIR": task.profile_dir,
+        "DP_STRICT_SHOP_PROFILE": "1" if task.engine == "browser" else "0",
         "DP_PROCESSED_LOG": task.processed_log,
         "DP_DEBUG_LOG": task.debug_log,
         "DP_STOP_FILE": task.stop_file,
@@ -428,7 +422,7 @@ def dispatch_queued_tasks():
                     if candidate is None or candidate.state != "queued":
                         continue
                     candidate.slot = slot
-                    candidate.profile_dir = PROFILE_SLOTS[slot]
+                    candidate.profile_dir = listing_profile_for_shop(candidate.shop_id) if candidate.engine == "browser" else ""
                     candidate.state = "starting"
                     candidate.message = "排队结束，正在启动"
                     candidate.queue_position = None
@@ -548,8 +542,16 @@ def start_task(shop_id, mode, test_n, save_only=False, product_id="", cover_all_
 
 app = Flask(__name__, static_folder=None)
 from app.gaia_listing.api.routes import create_gaia_blueprint
+from integrations.gaia_browser.goods_count_probe import probe_model_goods_counts
 
-app.register_blueprint(create_gaia_blueprint(WORK_DIR, SHOP_MAPPING.values()))
+app.register_blueprint(create_gaia_blueprint(
+    WORK_DIR, SHOP_MAPPING.values(),
+    goods_count_probe=lambda models: probe_model_goods_counts(
+        profile_dir=os.path.join(WORK_DIR, "gaia_browser_data"),
+        models=models,
+        lock_path=os.path.join(WORK_DIR, "panel_data", "gaia_listing", "upload.lock"),
+    ),
+))
 
 
 @app.route("/")

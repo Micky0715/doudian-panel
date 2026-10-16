@@ -1,14 +1,39 @@
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock
 
+from integrations.doudian.browser_profiles import browser_profile_for_shop, has_browser_login
 from integrations.doudian.cpay_browser import (
-    CpayEnrollmentError, _wait_create_page, validate_request,
+    CpayEnrollmentError, _wait_create_page, probe_cpay_session, validate_request,
 )
 from integrations.doudian.cpay_readback import verify_cpay_membership
 from integrations.doudian.cpay_terms import required_cpay_terms
 
 
 class CpayBrowserGuardsTests(unittest.TestCase):
+    def test_browser_profiles_are_isolated_by_shop_but_shared_by_workflow(self):
+        with tempfile.TemporaryDirectory() as root:
+            a = browser_profile_for_shop(root, 'cpay', '636781')
+            b = browser_profile_for_shop(root, 'cpay', '208501840')
+            listing = browser_profile_for_shop(root, 'listing', '636781')
+            self.assertNotEqual(a, b)
+            self.assertEqual(a, listing)
+            self.assertEqual(Path(root).resolve() / 'panel_data/browser_profiles/listing/636781', a)
+            self.assertFalse(a.exists())  # Resolving must not copy a legacy login.
+            self.assertFalse(has_browser_login(a))
+            for shop in ('', '../636781', '636781/other'):
+                with self.assertRaises(ValueError):
+                    browser_profile_for_shop(root, 'cpay', shop)
+            with self.assertRaises(ValueError):
+                browser_profile_for_shop(root, 'unknown', '636781')
+
+    def test_missing_shop_profile_stops_before_opening_browser(self):
+        with tempfile.TemporaryDirectory() as root:
+            profile = browser_profile_for_shop(root, 'cpay', '636781')
+            with self.assertRaisesRegex(CpayEnrollmentError, '--shop-id 636781'):
+                probe_cpay_session(str(profile), '636781', '【6期免息】')
+
     def test_create_page_waits_for_async_tab(self):
         home = MagicMock(url='https://fxg.jinritemai.com/ffa/cpay/home')
         create = MagicMock(url='https://fxg.jinritemai.com/ffa/cpay/stages-interest/create')
@@ -25,6 +50,11 @@ class CpayBrowserGuardsTests(unittest.TestCase):
     def test_12_selects_only_12_and_24_selects_12_plus_24(self):
         self.assertEqual((12,), required_cpay_terms(12))
         self.assertEqual((12, 24), required_cpay_terms(24))
+        self.assertEqual((6,), required_cpay_terms([6]))
+        self.assertEqual((6, 24), required_cpay_terms([24, 6]))
+        self.assertEqual((24,), required_cpay_terms([24]))
+        with self.assertRaises(ValueError):
+            required_cpay_terms([6, 6])
         with self.assertRaises(ValueError):
             required_cpay_terms(6)
 

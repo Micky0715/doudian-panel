@@ -786,6 +786,7 @@ def main() -> int:
         target_detail_urls = compose_detail_urls(
             original_detail_urls, grade_urls,
             use_combined_grade_image=use_combined_grade_image,
+            no_grade_image=grade_plan.strategy == "no_grade_image",
         )
         payload = {
             "product_id": product_id,

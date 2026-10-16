@@ -25,6 +25,7 @@ window.createGaiaUploadController = function ({onChange = () => {}} = {}) {
     || ['gaia_submitted', 'gaia_accepted', 'gaia_rejected', 'doudian_drafts_matched', 'handed_off'].includes(batch?.state);
   const active = value => ['confirmed', 'gaia_submitted'].includes(value?.state)
     && ['uploading', 'submitting'].includes(value?.gaia_receipt?.phase)
+    || value?.gaia_receipt?.split_phase === 'running'
     || ['gaia_accepted', 'doudian_drafts_matched'].includes(value?.state)
       && ['waiting_gaia', 'ids_verified', 'submitting'].includes(value?.gaia_receipt?.price_phase)
     || value?.state === 'handed_off'
@@ -113,9 +114,9 @@ window.createGaiaUploadController = function ({onChange = () => {}} = {}) {
         body: JSON.stringify({shop_id: batch.shop_id, expected_output_hash: batch.output_hash,
           confirmed: true,
           activity_name: document.querySelector('#gaiaActivityName')?.value?.trim() || '',
-          installments: document.querySelector('#gaiaScene')?.value === '1'
-            || document.querySelector('#gaiaPriceInstallments')?.value === 'full'
-            ? null : Number(document.querySelector('#gaiaPriceInstallments')?.value || 12)})
+          installment_terms: Array.from(document.querySelector('#gaiaPaymentOptions')
+            ?.querySelectorAll('input[type="checkbox"]:checked') || [], input => input.value)
+            .filter(value => value !== 'full').map(Number).sort((a, b) => a - b)})
       }, 60000);
       const data = response.data;
       if (stopping || version !== revision || disposed) return {success: true};
@@ -211,7 +212,9 @@ window.createGaiaUploadController = function ({onChange = () => {}} = {}) {
       clearTimeout(timer);
       sessionStorage.removeItem('gaia-upload-batch');
       status.textContent = value
-        ? '已填好 ' + value.summary.generated_rows + ' 行，等待上传。'
+        ? '已填好 ' + (value.summary.split_total_rows || value.summary.generated_rows)
+          + ' 行' + (value.summary.split_part_total > 1 ? '，分成 ' + value.summary.split_part_total + ' 份' : '')
+          + '，等待上传。'
         : '填写店铺、成色和型号后点击“开始执行”，自动匹配、填表并上传盖亚。';
       render();
     }

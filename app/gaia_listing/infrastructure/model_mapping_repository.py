@@ -12,6 +12,7 @@ import os
 import re
 import uuid
 from collections import Counter
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
@@ -36,6 +37,7 @@ class ModelMappingRepository:
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+        self._legacy_goods_cache: dict[str, List[ModelMappingRecord]] = {}
 
     def latest(self) -> dict | None:
         versions = []
@@ -89,6 +91,51 @@ class ModelMappingRepository:
             raise GaiaMappingContractError("型号映射规范索引内容无效") from exc
         if len(records) != metadata.get("record_count"):
             raise GaiaMappingContractError("型号映射规范索引行数不一致")
+        if metadata.get("quality_coverage_version") != 2:
+            # Existing immutable versions lack the goods/quality index. Derive it
+            # once from their hash-verified original; never rewrite old files.
+            if version_id not in self._legacy_goods_cache:
+                sidecar = self.root / (version_id + ".goods.json")
+                use_sidecar = False
+                if sidecar.is_file():
+                    try:
+                        cached = json.loads(sidecar.read_text(encoding="utf-8"))
+                        if cached.get("quality_coverage_version") != 2:
+                            raise ValueError("outdated coverage mapping")
+                        if cached.get("source_sha256") != metadata["sha256"]:
+                            raise ValueError("source hash changed")
+                        goods_by_sku = cached["goods_by_sku"]
+                        if not isinstance(goods_by_sku, dict) or set(goods_by_sku) != {
+                                item.standard_sku_id for item in records}:
+                            raise ValueError("SKU list changed")
+                        enriched = [replace(item, goods_by_quality=goods_by_sku[item.standard_sku_id])
+                                    for item in records]
+                        use_sidecar = True
+                    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+                        # Sidecars are derived caches, never the authoritative source.
+                        # Rebuild stale or damaged coverage from the verified upload.
+                        pass
+                if not use_sidecar:
+                    enriched = import_model_mapping_with_report(str(source)).records
+                if ([item.standard_sku_id for item in enriched]
+                        != [item.standard_sku_id for item in records]):
+                    raise GaiaMappingContractError("型号映射成色货品回读与旧索引不一致")
+                if not use_sidecar:
+                    payload = {"quality_coverage_version": 2,
+                               "source_sha256": metadata["sha256"], "goods_by_sku": {
+                        item.standard_sku_id: item.goods_by_quality for item in enriched}}
+                    temporary = self.root / (version_id + ".goods." + uuid.uuid4().hex + ".tmp")
+                    try:
+                        with temporary.open("x", encoding="utf-8") as handle:
+                            json.dump(payload, handle, ensure_ascii=False, separators=(",", ":"))
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        os.replace(temporary, sidecar)
+                    finally:
+                        if temporary.exists():
+                            temporary.unlink()
+                self._legacy_goods_cache[version_id] = enriched
+            return metadata, self._legacy_goods_cache[version_id]
         return metadata, records
 
     def save_upload(self, upload) -> dict:
@@ -143,6 +190,7 @@ class ModelMappingRepository:
                         "model": row.model,
                         "standard_sku_id": row.standard_sku_id,
                         "category": row.category,
+                        "goods_by_quality": row.goods_by_quality,
                     }
                     for row in records
                 ],
@@ -164,6 +212,7 @@ class ModelMappingRepository:
                 "duplicate_rows": import_report.duplicate_rows,
                 "mainland_filter_applied": import_report.mainland_filter_applied,
                 "mapping_policy": "explicit_mainland_only_v2" if import_report.mainland_filter_applied else "operator_mapping_v1",
+                "quality_coverage_version": 2,
                 "excluded_non_mainland_rows": import_report.excluded_non_mainland_rows,
                 "excluded_non_mainland_sku_count": import_report.excluded_non_mainland_sku_count,
                 "index_sha256": hashlib.sha256(index_bytes).hexdigest(),

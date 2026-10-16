@@ -1,13 +1,17 @@
 import unittest
 from datetime import datetime
 from html import escape
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from playwright.sync_api import sync_playwright
 
 from app.gaia_listing.application.price_uplift import PriceUpliftError
 from integrations.gaia_browser.channel_reconcile import (
-    _matching_search_response, _select_exact_shop_filter,
+    ChannelProductNotConfirmedError,
+    _channel_search_request, _matching_search_response, _search_failure_detail,
+    _search_response_total, _retry_stale_search,
+    _model_search_queries, _title_matches, snapshot_channel_products,
+    _select_exact_shop_filter,
     _wait_for_fresh_page_rows, _wait_for_search_rows,
     reconcile_channel_products,
 )
@@ -37,12 +41,57 @@ class ChannelReconcileTests(unittest.TestCase):
         self.assertEqual([PRODUCT['product_id']], self.check([], [PRODUCT]))
 
     def test_old_product_is_not_reused(self):
-        with self.assertRaisesRegex(PriceUpliftError, '不能唯一确认'):
+        with self.assertRaises(ChannelProductNotConfirmedError) as caught:
             self.check([PRODUCT], [PRODUCT])
+        self.assertEqual(0, caught.exception.diagnostics['new_id_count'])
+        self.assertEqual({}, caught.exception.diagnostics['excluded'])
+        self.assertIn('未查到本次新商品', str(caught.exception))
 
     def test_similar_model_does_not_match(self):
-        with self.assertRaisesRegex(PriceUpliftError, '不能唯一确认'):
+        with self.assertRaises(ChannelProductNotConfirmedError) as caught:
             self.check([], [dict(PRODUCT, title='苹果 iPhone 17 Pro Max 二手手机')])
+        self.assertEqual({'title': 1}, caught.exception.diagnostics['excluded'])
+
+    def test_other_samsung_variant_does_not_auto_associate(self):
+        expected = [{'brand': '三星', 'model': '三星 Galaxy S21 (5G版)'}]
+        key = '三星三星galaxys215g版'
+        item = dict(PRODUCT, shop_id='51165770', title='三星Galaxy S21 FE 5G 二手手机')
+        with self.assertRaises(ChannelProductNotConfirmedError) as caught:
+            reconcile_channel_products(
+                {key: {'items': []}}, {key: {'items': [item]}},
+                shop_id='51165770', expected_products=expected,
+                submitted_at=datetime(2026, 10, 9, 17, 41, 43),
+                observed_at=datetime(2026, 10, 9, 17, 41, 50))
+        self.assertEqual({'title': 1}, caught.exception.diagnostics['excluded'])
+
+    def test_verified_5g_version_spelling_matches_only_same_variant(self):
+        model = '三星 Galaxy S21 (5G版)'
+        self.assertIn('三星Galaxy S21 5G', _model_search_queries(model))
+        self.assertTrue(_title_matches('三星Galaxy S21 5G 二手手机', '三星', model))
+        for title in ('三星Galaxy S21 二手手机',
+                      '三星Galaxy S21 4G 二手手机',
+                      '三星Galaxy S21+ 5G 二手手机',
+                      '三星Galaxy S21 Ultra 5G 二手手机'):
+            with self.subTest(title=title):
+                self.assertFalse(_title_matches(title, '三星', model))
+
+        expected = [{'brand': '三星', 'model': model}]
+        key = '三星三星galaxys215g版'
+        item = dict(PRODUCT, shop_id='51165770',
+                    title='三星Galaxy S21 5G 二手手机',
+                    created_at='2026-10-15 15:50:00')
+        self.assertEqual([item['product_id']], reconcile_channel_products(
+            {key: {'items': []}}, {key: {'items': [item]}},
+            shop_id='51165770', expected_products=expected,
+            submitted_at=datetime(2026, 10, 15, 15, 49, 43),
+            observed_at=datetime(2026, 10, 15, 15, 50, 5)))
+
+    def test_zero_candidates_identifies_status_filter_without_accepting_product(self):
+        with self.assertRaises(ChannelProductNotConfirmedError) as caught:
+            self.check([], [dict(PRODUCT, status='审核中')])
+        self.assertEqual({'status': 1}, caught.exception.diagnostics['excluded'])
+        self.assertEqual(1, caught.exception.diagnostics['new_id_count'])
+        self.assertIn('状态不符 1 个', str(caught.exception))
 
     def test_ambiguous_concurrent_creation_stops(self):
         with self.assertRaisesRegex(PriceUpliftError, '2 个'):
@@ -50,8 +99,63 @@ class ChannelReconcileTests(unittest.TestCase):
 
     def test_cross_shop_or_scene_stops(self):
         for change in ({'shop_id': '7970406'}, {'scene': '直播间'}):
-            with self.subTest(change=change), self.assertRaisesRegex(PriceUpliftError, '不能唯一确认'):
+            with self.subTest(change=change), self.assertRaisesRegex(PriceUpliftError, '符合条件 0 个'):
                 self.check([], [dict(PRODUCT, **change)])
+
+    def test_livestream_room_matches_only_room_products(self):
+        kwargs = dict(shop_id='168976032', expected_products=EXPECTED,
+                      submitted_at=datetime(2026, 10, 9, 17, 41, 43),
+                      observed_at=datetime(2026, 10, 9, 17, 41, 50), scene=1)
+        room = dict(PRODUCT, scene='直播间')
+        before = {KEY: {'items': []}}
+        self.assertEqual([PRODUCT['product_id']], reconcile_channel_products(
+            before, {KEY: {'items': [room]}}, **kwargs))
+        with self.assertRaisesRegex(PriceUpliftError, '符合条件 0 个'):
+            reconcile_channel_products(before, {KEY: {'items': [PRODUCT]}}, **kwargs)
+
+    def test_gaia_whitespace_variant_is_found_but_still_requires_exact_product(self):
+        self.assertEqual(['一加 9 Pro', '一加9 Pro', '一加 9Pro', '一加9Pro'],
+                         _model_search_queries('一加 9 Pro'))
+        self.assertEqual(
+            ['苹果 iPhone 14', '苹果iPhone 14', '苹果 iPhone14', '苹果iPhone14'],
+            _model_search_queries('苹果 iPhone 14'))
+        self.assertEqual(
+            ['三星 Galaxy S21 (5G版)', '三星Galaxy S21 (5G版)',
+             '三星GalaxyS21(5G版)', '三星 Galaxy S21 5G',
+             '三星Galaxy S21 5G', '三星GalaxyS215G'],
+            _model_search_queries('三星 Galaxy S21 (5G版)'))
+        self.assertEqual(
+            ['iQOO 12 Pro', 'iQOO12 Pro', 'iQOO 12Pro', 'iQOO12Pro'],
+            _model_search_queries('iQOO 12 Pro'))
+        self.assertIn('一加 Ace5 Pro', _model_search_queries('一加 Ace 5 Pro'))
+        iqoo = dict(PRODUCT, product_id='3848411662923202853',
+                    shop_id='129675602', title='iQOO 12Pro 二手手机',
+                    created_at='2026-10-15 18:03:13')
+        self.assertEqual(['3848411662923202853'], reconcile_channel_products(
+            {'iqooiqoo12pro': {'items': []}},
+            {'iqooiqoo12pro': {'items': [iqoo]}},
+            shop_id='129675602',
+            expected_products=[{'brand': 'iQOO', 'model': 'iQOO 12 Pro'}],
+            submitted_at=datetime(2026, 10, 15, 18, 3, 4),
+            observed_at=datetime(2026, 10, 15, 18, 3, 20)))
+        item = dict(PRODUCT, product_id='3848413505506115683', shop_id='51165770',
+                    title='一加9 Pro 二手手机', created_at='2026-10-15 17:59:38')
+        page = Mock()
+        page.locator.return_value.count.return_value = 1
+        page.get_by_role.return_value.filter.return_value.count.return_value = 1
+        with patch('integrations.gaia_browser.channel_reconcile._select_exact_shop_filter'), \
+             patch('integrations.gaia_browser.channel_reconcile._search_channel_model',
+                   side_effect=[[], [item], [], [item]]) as search:
+            after = snapshot_channel_products(
+                page, '51165770', [{'brand': '一加', 'model': '一加 9 Pro'}])
+        self.assertEqual(['一加 9 Pro', '一加9 Pro', '一加 9Pro', '一加9Pro'],
+                         [call.args[-1] for call in search.call_args_list])
+        before = {'一加一加9pro': {'items': []}}
+        self.assertEqual([item['product_id']], reconcile_channel_products(
+            before, after, shop_id='51165770',
+            expected_products=[{'brand': '一加', 'model': '一加 9 Pro'}],
+            submitted_at=datetime(2026, 10, 15, 17, 59, 30),
+            observed_at=datetime(2026, 10, 15, 17, 59, 45)))
 
 
 class ChannelShopFilterTests(unittest.TestCase):
@@ -104,6 +208,77 @@ class ChannelShopFilterTests(unittest.TestCase):
 
 
 class ChannelPaginationTests(unittest.TestCase):
+    def test_exact_api_response_count_is_validated(self):
+        class Response:
+            status = 200
+            def json(self):
+                return {'code': 200, 'data': {'totalCount': 2}}
+        self.assertEqual(2, _search_response_total(Response()))
+        with patch.object(Response, 'json', return_value={'code': 200, 'data': {'totalCount': 401}}):
+            with self.assertRaisesRegex(PriceUpliftError, '超过 400'):
+                _search_response_total(Response())
+
+    def test_stale_ui_retries_exact_search_once_and_still_fails_closed(self):
+        class Response:
+            status = 200
+            def json(self):
+                return {'code': 200, 'data': {'totalCount': 2}}
+        class Expected:
+            value = Response()
+            def __enter__(self):
+                return self
+            def __exit__(self, *_):
+                return False
+        class Page:
+            def __init__(self):
+                self.delays = []
+            def wait_for_timeout(self, ms):
+                self.delays.append(ms)
+            def expect_response(self, predicate, timeout):
+                self.predicate = predicate
+                return Expected()
+        class Search:
+            clicks = 0
+            def click(self, timeout):
+                self.clicks += 1
+        page, search = Page(), Search()
+        rows = [{'product_id': '1234567890'}]
+        with patch('integrations.gaia_browser.channel_reconcile._wait_for_search_rows',
+                   return_value=(rows, 2)) as wait:
+            self.assertEqual((rows, 2), _retry_stale_search(page, search, '51165770', '一加 10 Pro'))
+        self.assertEqual(1, search.clicks)
+        wait.assert_called_once_with(page, '51165770', '一加 10 Pro', 2)
+        with patch('integrations.gaia_browser.channel_reconcile._wait_for_search_rows',
+                   side_effect=PriceUpliftError('页面总数 26322 与本次接口结果 2 不一致')):
+            with self.assertRaisesRegex(PriceUpliftError, '重查后仍未刷新'):
+                _retry_stale_search(page, search, '51165770', '一加 10 Pro')
+        self.assertEqual(2, search.clicks)
+
+    def test_search_failure_distinguishes_no_request_timeout_and_wrong_filter(self):
+        expected = {'shopIds': ['208501840'],
+                    'channelSpuName': '苹果 iPhone 17 Pro', 'pageNo': 1}
+        detail = lambda requests, responses=None, failures=None: _search_failure_detail(
+            requests, responses or [], failures or [], '208501840', '苹果 iPhone 17 Pro')
+        self.assertIn('未发出', detail([]))
+        self.assertIn('25 秒内未返回', detail([expected]))
+        self.assertIn('请求失败', detail([expected], failures=[(expected, 'net::ERR_TIMED_OUT')]))
+        self.assertIn('HTTP 200', detail([expected], responses=[(expected, 200)]))
+        self.assertIn('shopIds', detail([dict(expected, shopIds=['7970406'])]))
+        self.assertIn('请求体不是有效 JSON', detail([{'invalid_body': True}]))
+
+    def test_search_request_diagnostics_do_not_include_full_url(self):
+        from urllib.parse import quote
+
+        class Request:
+            method = 'GET'
+            url = ('https://gaiya.jd.com/api?apiName='
+                   'pop.erp.goods.product.spu.query.product.list&body='
+                   + quote('{"shopIds":["208501840"],"channelSpuName":"苹果 iPhone 17 Pro","pageNo":1}')
+                   + '&token=secret')
+
+        self.assertEqual({'shopIds': ['208501840'], 'channelSpuName': '苹果 iPhone 17 Pro',
+                          'pageNo': 1}, _channel_search_request(Request()))
+
     def test_only_exact_shop_model_response_is_accepted(self):
         from urllib.parse import quote
 

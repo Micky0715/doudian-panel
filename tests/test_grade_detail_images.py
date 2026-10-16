@@ -64,6 +64,18 @@ class GradeDetailPlanTests(unittest.TestCase):
             plan = build_grade_only_plan(_detail("99新", "95新"), root)
             self.assertEqual([item.slot for item in plan.images], ["99新", "95新"])
 
+    def test_nearly_new_uses_no_grade_image(self):
+        with tempfile.TemporaryDirectory() as folder:
+            only = build_grade_only_plan(_detail("准新品"), folder)
+            self.assertEqual(only.strategy, "no_grade_image")
+            self.assertEqual(only.images, ())
+            root = self._gallery(folder, grades=())
+            complete = build_grade_detail_plan(_detail("准新品"), root)
+            self.assertEqual(complete.strategy, "common_only")
+            self.assertEqual([image.slot for image in complete.images], list(COMMON_SLOTS))
+            with self.assertRaisesRegex(GradeDetailError, "混用"):
+                build_grade_only_plan(_detail("准新品", "99新"), root)
+
     def test_doudian_decorative_brackets_around_grade_group_are_accepted(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

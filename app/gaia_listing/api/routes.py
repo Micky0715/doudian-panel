@@ -1,11 +1,16 @@
 import os
 import json
+import hashlib
+import secrets
 import tempfile
 import shutil
+import threading
+import time
+from io import BytesIO
 from pathlib import Path
 from zipfile import BadZipFile
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request, send_file
 
 from ..infrastructure.excel_inspector import (
     ExcelInspectionError,
@@ -23,12 +28,19 @@ from ..domain.mapping_contract import GaiaMappingContractError
 from ..application.create_batch import create_inspected_batch
 from ..application.create_batch import sha256_file
 from ..application.batch_lifecycle import cancel_batch_record
-from ..application.generate_batch import prepare_gaia_template, generate_gaia_batch
+from ..application.generate_batch import (
+    apply_live_goods_plan, generate_gaia_batch, prepare_gaia_template,
+)
 from ..application.handoff_preflight import inspect_handoff
+from ..application.result_diagnostics import diagnose_gaia_result
 from ..application.model_resolution import (
     resolve_model_records,
     resolve_standard_sku,
     resolve_operator_models,
+)
+from ..application.rejected_skus import (
+    rejected_sku_evidence, rejected_skus_in_workbook,
+    rejected_variant_evidence, rejected_variants_in_workbook,
 )
 from ..infrastructure.quality_mapping_repository import QualityMappingRepository
 from ..infrastructure.template_writer import GaiaTemplateWriteError
@@ -40,7 +52,7 @@ from ..infrastructure.price_uplift_template import (
 )
 
 
-def create_gaia_blueprint(work_dir, known_shop_ids=None):
+def create_gaia_blueprint(work_dir, known_shop_ids=None, goods_count_probe=None):
     bp = Blueprint("gaia_listing", __name__, url_prefix="/api/gaia")
     downloads_dir = os.path.expanduser(os.environ.get("GAIA_DOWNLOADS_DIR", "~/Downloads"))
     imports_dir = os.path.join(work_dir, "panel_data", "gaia_listing", "imports")
@@ -56,6 +68,56 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
     template_repository = TemplateRepository(template_imports_dir, profiles_path)
     quality_repository = QualityMappingRepository(os.path.join(work_dir, "config", "gaia_quality_mapping.json"))
     known_shop_ids = {str(value) for value in (known_shop_ids or [])}
+    live_plan_cache = {}
+    live_plan_lock = threading.Lock()
+
+    def prepared_signature(prepared, shop_id, scene):
+        payload = {
+            "shop_id": str(shop_id), "scene": str(scene),
+            "source_sha256": prepared.source_hash,
+            "mapping_sha256": prepared.mapping["sha256"],
+            "quality_ids": list(prepared.quality_ids),
+            "quality_link": prepared.quality_link,
+            "rows": [list(row.values()) for row in prepared.rows],
+        }
+        return hashlib.sha256(json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+
+    def apply_or_create_live_plan(prepared, shop_id, scene, token=None):
+        if goods_count_probe is None:
+            return prepared, None
+        signature = prepared_signature(prepared, shop_id, scene)
+        now = time.monotonic()
+        if token:
+            with live_plan_lock:
+                expired = [key for key, value in live_plan_cache.items() if value["expires"] <= now]
+                for key in expired:
+                    live_plan_cache.pop(key, None)
+                cached = live_plan_cache.get(str(token))
+            if not cached or cached["signature"] != signature:
+                raise ValueError("盖亚实时货品数量预览已过期或参数已变化，请重新预览")
+            return apply_live_goods_plan(prepared, cached["snapshot"]), str(token)
+
+        unique = []
+        seen = set()
+        for model in prepared.models:
+            key = (str(model.brand).strip().casefold(), str(model.model).strip().casefold())
+            if key not in seen:
+                seen.add(key)
+                unique.append({"brand": model.brand, "model": model.model})
+        try:
+            snapshot = goods_count_probe(unique)
+        except Exception as exc:
+            message = str(exc).splitlines()[0][:500]
+            raise ValueError("无法只读取得盖亚实时货品数量，未生成或上传：" + message) from exc
+        planned = apply_live_goods_plan(prepared, snapshot)
+        plan_token = secrets.token_urlsafe(24)
+        with live_plan_lock:
+            live_plan_cache[plan_token] = {
+                "signature": signature, "snapshot": snapshot, "expires": now + 300,
+            }
+        return planned, plan_token
 
     def upload_enabled():
         override = os.environ.get("GAIA_LISTING_V1_ENABLED")
@@ -67,6 +129,30 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
         except (OSError, ValueError):
             return False
 
+    def quarantine_error(batch):
+        excluded = rejected_sku_evidence(batches_dir, batch["mapping_version_id"])
+        variants = rejected_variant_evidence(batches_dir, batch["mapping_version_id"])
+        if excluded or variants:
+            try:
+                invalid = rejected_skus_in_workbook(batch["output_path"], excluded)
+                invalid_variants = rejected_variants_in_workbook(batch["output_path"], variants)
+            except (OSError, ValueError, BadZipFile):
+                return "无法回读标品 ID，请重新生成新批次"
+            if invalid:
+                return ("生成文件含盖亚此前明确拒绝的标品 ID：%s；请重新匹配并生成新批次"
+                        % "、".join(invalid[:10]))
+            if invalid_variants:
+                details = "、".join("标品 %s / 成色 %s" % item for item in invalid_variants[:10])
+                return "生成文件含盖亚此前明确拒绝的标品与成色组合：%s；请重新匹配并生成新批次" % details
+        return None
+
+    def selected_quality_ids(data):
+        labels = data.get("quality_labels", [data.get("quality_label")])
+        if not isinstance(labels, list):
+            raise ValueError("成色必须是多选清单")
+        return [quality_repository.get_required(label).dy_quality_id
+                for label in labels if label is not None]
+
     def inspect_upload(batch, shop_id):
         result = inspect_handoff(
             batch, requested_shop_id=shop_id, outputs_dir=outputs_dir,
@@ -77,6 +163,9 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
             metadata, _ = mapping_repository.get(batch["mapping_version_id"])
             if not metadata.get("mainland_filter_applied"):
                 return {"ready": False, "errors": ["价格规则映射尚未执行国行筛选，禁止上传"]}
+            error = quarantine_error(batch)
+            if error:
+                return {"ready": False, "errors": [error]}
         return result
 
     execution = GaiaUploadExecution(
@@ -140,6 +229,7 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
             },
             "contracts": {
                 "mapping_policy": "explicit_mainland_only_v2",
+                "payment_terms_policy": "explicit_terms_v1",
                 "template_role": "gaia_dual_quality_upload",
                 "price_export_role": "standard_sku_mapping_only",
             },
@@ -261,10 +351,14 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
         if len(rows) > 2000:
             return jsonify({"success": False, "message": "单次最多匹配 2000 个手机型号"}), 400
         try:
-            _, records = mapping_repository.load_records(
+            metadata, records = mapping_repository.load_records(
                 str(data.get("mapping_version_id") or "")
             )
-            result = resolve_operator_models(records, rows)
+            qualities = selected_quality_ids(data) if (
+                "quality_labels" in data or "quality_label" in data) else []
+            result = resolve_operator_models(
+                records, rows, allow_partial=data.get("allow_partial", False),
+                rejected_skus=rejected_sku_evidence(batches_dir, metadata["id"], qualities))
             return jsonify(result), (200 if result["success"] else 409)
         except (GaiaMappingContractError, OSError, ValueError) as exc:
             return jsonify({"success": False, "message": str(exc)}), 400
@@ -337,7 +431,7 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
             return jsonify({"success": False, "message": str(exc)}), 400
         return jsonify({"success": True, "batch": batch.to_dict(), "inspection": inspection}), 201
 
-    def _prepared_request(data):
+    def _prepared_request(data, *, use_live_token=None, create_live_plan=False):
         shop_id = str(data.get("shop_id") or "")
         if not shop_id.isdigit() or (known_shop_ids and shop_id not in known_shop_ids):
             raise ValueError("请选择有效店铺")
@@ -346,11 +440,15 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
         path = ensure_allowed_path(str(data.get("source_path") or ""), [downloads_dir, imports_dir])
         profiles = load_profiles(profiles_path)
         selected_sku_ids = data.get("selected_sku_ids")
+        resolution = None
         if "models" in data:
             metadata, records = mapping_repository.load_records(str(data.get("mapping_version_id") or ""))
             if not metadata.get("mainland_filter_applied"):
                 raise ValueError("请使用包含标品名称、已筛选国行的价格规则表")
-            resolution = resolve_operator_models(records, data["models"])
+            quality_ids = selected_quality_ids(data)
+            resolution = resolve_operator_models(
+                records, data["models"], allow_partial=data.get("allow_partial", False),
+                rejected_skus=rejected_sku_evidence(batches_dir, metadata["id"], quality_ids))
             if not resolution["success"]:
                 raise ValueError(resolution["message"])
             if selected_sku_ids != resolution["selected_sku_ids"]:
@@ -361,36 +459,62 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
             source_path=path, mapping_version_id=str(data.get("mapping_version_id") or ""),
             quality_label=(data.get("quality_labels") if "quality_labels" in data
                            else str(data.get("quality_label") or "")), scene=data.get("scene", 2),
+            quality_link=data.get("quality_link", "1"),
             selected_sku_ids=selected_sku_ids,
             profiles=profiles, mapping_repository=mapping_repository,
             quality_repository=quality_repository,
+            rejected_variants=rejected_variant_evidence(batches_dir, str(data.get("mapping_version_id") or "")),
         )
-        return shop_id, path, profiles, prepared
+        rejected_variants = rejected_variant_evidence(batches_dir, prepared.mapping["id"])
+        invalid_variants = [
+            (row.standard_sku_id, row.dy_quality_id) for row in prepared.rows
+            if (row.standard_sku_id, row.dy_quality_id) in rejected_variants
+        ]
+        if invalid_variants:
+            raise ValueError("盖亚此前拒绝标品 %s 与成色 %s 的组合，请重新匹配" % invalid_variants[0])
+        live_token = None
+        if goods_count_probe is not None:
+            if not create_live_plan and not use_live_token:
+                raise ValueError("缺少盖亚实时货品数量预览，请重新预览")
+            prepared, live_token = apply_or_create_live_plan(
+                prepared, shop_id, data.get("scene", 2), token=use_live_token)
+        return shop_id, path, profiles, prepared, resolution, live_token
 
     @bp.post("/batches/preview")
     def preview_batch():
         data = request.get_json(silent=True) or {}
         try:
-            _, _, _, prepared = _prepared_request(data)
+            _, _, _, prepared, _, live_token = _prepared_request(data, create_live_plan=True)
         except (ExcelInspectionError, GaiaMappingContractError, GaiaTemplateWriteError, OSError, ValueError) as exc:
             return jsonify({"success": False, "message": str(exc)}), 400
-        return jsonify({"success": True, "preview": prepared.preview()})
+        preview = prepared.preview()
+        if live_token:
+            preview["inventory_probe_token"] = live_token
+        return jsonify({"success": True, "preview": preview})
 
     @bp.post("/batches/generate")
     def generate_batch():
         data = request.get_json(silent=True) or {}
         try:
-            shop_id, source_path, profiles, prepared = _prepared_request(data)
+            shop_id, source_path, profiles, prepared, resolution, live_token = _prepared_request(
+                data, use_live_token=data.get("expected_inventory_probe_token"))
             if (data.get("expected_source_sha256") != prepared.source_hash
+                    or ("expected_quality_link" in data
+                        and str(data["expected_quality_link"]) != prepared.quality_link)
                     or (data.get("expected_quality_ids") != list(prepared.quality_ids)
                         if "expected_quality_ids" in data
-                        else data.get("expected_quality_id") != prepared.quality_id)):
-                raise ValueError("模板或成色配置在预览后发生变化，请重新预览")
+                        else data.get("expected_quality_id") != prepared.quality_id)
+                    or (prepared.split_plan_sha256
+                        and data.get("expected_split_plan_sha256") != prepared.split_plan_sha256)):
+                raise ValueError("模板、成色、质检链接或实时分表计划在预览后发生变化，请重新预览")
             batch = generate_gaia_batch(
                 repository=repository, outputs_dir=outputs_dir, shop_id=shop_id,
                 scene=data.get("scene", 2), create_count=1, source_path=source_path,
-                profiles=profiles, prepared=prepared,
+                profiles=profiles, prepared=prepared, selection_report=resolution,
             )
+            if live_token:
+                with live_plan_lock:
+                    live_plan_cache.pop(live_token, None)
         except (ExcelInspectionError, GaiaMappingContractError, GaiaTemplateWriteError, OSError, ValueError) as exc:
             return jsonify({"success": False, "message": str(exc)}), 400
         return jsonify({"success": True, "batch": batch.to_dict(), "preview": prepared.preview(),
@@ -413,6 +537,46 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
             return jsonify({"success": False, "message": "输出文件哈希不一致"}), 409
         return send_file(expected, as_attachment=True, download_name="gaia_%s.xlsx" % batch_id)
 
+    @bp.post("/batches/<batch_id>/result-diagnosis")
+    def diagnose_result(batch_id):
+        """Read an operator-supplied result without changing batch or platform state."""
+        try:
+            batch = repository.get(batch_id)
+        except ValueError as exc:
+            return jsonify({"success": False, "message": str(exc)}), 400
+        if batch is None:
+            return jsonify({"success": False, "message": "批次不存在"}), 404
+        shop_id = str(request.form.get("shop_id") or "")
+        if shop_id != str(batch.get("shop_id")) or (known_shop_ids and shop_id not in known_shop_ids):
+            return jsonify({"success": False, "message": "目标店铺与批次店铺不一致"}), 400
+        upload = request.files.get("file")
+        if upload is None or not str(upload.filename or "").lower().endswith(".xlsx"):
+            return jsonify({"success": False, "message": "请选择盖亚创建优品结果 xlsx 文件"}), 400
+        content = upload.stream.read(2 * 1024 * 1024 + 1)
+        if len(content) > 2 * 1024 * 1024:
+            return jsonify({"success": False, "message": "结果表超过 2 MB，拒绝读取"}), 400
+        expected = os.path.realpath(os.path.join(outputs_dir, batch_id, "gaia_upload.xlsx"))
+        if batch.get("output_path") != expected or not os.path.isfile(expected) \
+                or sha256_file(expected) != batch.get("output_hash"):
+            return jsonify({"success": False, "message": "本批次上传文件无法核验"}), 409
+        goods_by_sku = None
+        try:
+            metadata, _ = mapping_repository.get(str(batch.get("mapping_version_id") or ""))
+            sidecar = mapping_repository.root / (metadata["id"] + ".goods.json")
+            if sidecar.is_file():
+                coverage = json.loads(sidecar.read_text(encoding="utf-8"))
+                if (coverage.get("quality_coverage_version") == 2
+                        and coverage.get("source_sha256") == metadata["sha256"]):
+                    goods_by_sku = coverage.get("goods_by_sku")
+        except (GaiaMappingContractError, OSError, ValueError, KeyError):
+            pass  # Still diagnose the result; historical mapping coverage is optional.
+        try:
+            report = diagnose_gaia_result(
+                batch=batch, result_path=BytesIO(content), goods_by_sku=goods_by_sku)
+        except (OSError, ValueError, BadZipFile, KeyError, IndexError) as exc:
+            return jsonify({"success": False, "message": str(exc).splitlines()[0][:300]}), 400
+        return jsonify({"success": True, "diagnosis": report})
+
     @bp.get("/batches/<batch_id>/handoff-preflight")
     def handoff_preflight(batch_id):
         try:
@@ -430,6 +594,10 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
             mapping_repository=mapping_repository,
             quality_repository=quality_repository,
         )
+        if result["ready"]:
+            error = quarantine_error(batch)
+            if error:
+                result = {"ready": False, "errors": [error]}
         return jsonify({"success": result["ready"], "preflight": result}), (200 if result["ready"] else 409)
 
     @bp.get("/batches/<batch_id>")
@@ -456,10 +624,15 @@ def create_gaia_blueprint(work_dir, known_shop_ids=None):
                                     expected_hash=data.get("expected_output_hash"),
                                     confirmed=data.get("confirmed"),
                                     installments=data.get("installments"),
+                                    installment_terms=data.get("installment_terms"),
                                     activity_name=data.get("activity_name"))
         except ValueError as exc:
+            current_app.logger.warning("gaia_start_rejected batch=%s shop=%s reason=%s",
+                                       batch_id, shop_id, str(exc).splitlines()[0][:500])
             return jsonify({"success": False, "message": str(exc)}), 400
         except RuntimeError as exc:
+            current_app.logger.warning("gaia_start_rejected batch=%s shop=%s reason=%s",
+                                       batch_id, shop_id, str(exc).splitlines()[0][:500])
             return jsonify({"success": False, "message": str(exc)}), 409
         return jsonify({"success": True, "batch": batch}), 202
 

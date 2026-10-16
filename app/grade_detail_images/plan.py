@@ -40,7 +40,8 @@ class GradeDetailPlan:
 
 COMMON_SLOTS = ("1", "2", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14")
 GRADE_IMAGE_SLOTS = {"9新": "9新", "90新": "9新", "95新": "95新", "99新": "99新"}
-SUPPORTED_GRADES = frozenset(GRADE_IMAGE_SLOTS)
+NO_GRADE_IMAGE = "准新品"
+SUPPORTED_GRADES = frozenset(GRADE_IMAGE_SLOTS) | {NO_GRADE_IMAGE}
 THREE_GRADE_SLOTS = frozenset({"99新", "95新", "9新"})
 SOURCE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp"})
 
@@ -73,6 +74,8 @@ def _grade_values(detail: Mapping[str, Any]) -> tuple[str, ...]:
         raise GradeDetailError("成色规格值为空、重复或结构异常")
     if any(grade not in SUPPORTED_GRADES for grade in grades):
         raise GradeDetailError("成色规格值未在已维护图库中明确支持：" + ",".join(grades))
+    if NO_GRADE_IMAGE in grades and grades != (NO_GRADE_IMAGE,):
+        raise GradeDetailError("准新品与其他成色混用，不能自动决定成色图")
     return grades
 
 
@@ -114,6 +117,11 @@ def build_grade_detail_plan(detail: Mapping[str, Any], root: str | Path) -> Grad
     if not detail_root.is_dir():
         raise GradeDetailError("商品详情图库不存在")
     grades = _grade_values(detail)
+    if grades == (NO_GRADE_IMAGE,):
+        images = tuple(_image(slot, _one_file(detail_root, slot)) for slot in COMMON_SLOTS)
+        if len({image.sha256 for image in images}) != len(images):
+            raise GradeDetailError("详情图库存在内容重复的槽位")
+        return GradeDetailPlan(grades=grades, images=images, strategy="common_only")
     grade_slots = tuple(GRADE_IMAGE_SLOTS[grade] for grade in grades)
     if len(set(grade_slots)) != len(grade_slots):
         raise GradeDetailError("多个成色规格映射到同一张成色图，需人工核对")
@@ -130,6 +138,8 @@ def build_grade_only_plan(detail: Mapping[str, Any], root: str | Path) -> GradeD
     if not detail_root.is_dir():
         raise GradeDetailError("商品详情图库不存在")
     grades = _grade_values(detail)
+    if grades == (NO_GRADE_IMAGE,):
+        return GradeDetailPlan(grades=grades, images=(), strategy="no_grade_image")
     slots = tuple(GRADE_IMAGE_SLOTS[grade] for grade in grades)
     if len(set(slots)) != len(slots):
         raise GradeDetailError("多个成色规格映射到同一张成色图，需人工核对")

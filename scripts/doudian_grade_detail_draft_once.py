@@ -89,9 +89,12 @@ def select_existing_detail_urls(original_urls: list[str], *,
 
 
 def compose_detail_urls(original_urls: list[str], grade_urls: list[str], *,
-                        use_combined_grade_image: bool = False) -> list[str]:
+                        use_combined_grade_image: bool = False,
+                        no_grade_image: bool = False) -> list[str]:
     """Select the combined grade image or insert exact individual grade files."""
-    valid_grade_count = (len(grade_urls) == 0 if use_combined_grade_image
+    if no_grade_image and use_combined_grade_image:
+        raise GradeDetailCanaryError("准新品不能使用合并成色说明图")
+    valid_grade_count = (len(grade_urls) == 0 if use_combined_grade_image or no_grade_image
                          else 1 <= len(grade_urls) <= 2)
     if not valid_grade_count:
         raise GradeDetailCanaryError("详情原图或成色图数量不符合首次验收边界")
@@ -254,6 +257,7 @@ def main() -> int:
         new_urls = compose_detail_urls(
             original_urls, [material.byte_url for material in uploaded],
             use_combined_grade_image=use_combined,
+            no_grade_image=plan.strategy == "no_grade_image",
         )
         payload = {
             "product_id": product_id,

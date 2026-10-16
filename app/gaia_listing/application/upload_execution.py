@@ -6,15 +6,20 @@ generate a workbook, call Doudian, or publish Doudian products.
 
 import fcntl
 import os
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
 
 from ..domain.models import GaiaBatch
 from .submission_guard import can_submit, submission_idempotency_key
+from .rejected_skus import missing_goods_pair
+from .retry_batch import create_remaining_batch
 from .batch_lifecycle import cancel_batch_record
 from .price_uplift import PRICE_RULE_NAMES, PRICE_RULE_RATES, prepare_price_uplift, rule_name_matches_shop_term
 from ..infrastructure.price_uplift_template import write_price_uplift_template
+from integrations.doudian.cpay_terms import required_cpay_terms
+from integrations.doudian.browser_profiles import browser_profile_for_shop
 
 
 class GaiaUploadExecution:
@@ -33,17 +38,21 @@ class GaiaUploadExecution:
         self.activity_probe = activity_probe
         self.activity_session_probe = activity_session_probe
 
-    def _verify_price_rule(self, shop_id, installments):
+    def _verify_price_rule(self, shop_id, installments, scene=2):
         probe = self.price_probe
         if probe is None:
             from integrations.gaia_browser.price_rule_probe import probe_exact_rule
             probe = probe_exact_rule
-        checked = probe(str(self.root / "gaia_browser_data"), shop_id, installments)
-        rate = PRICE_RULE_RATES[str(shop_id)][int(installments)]
-        if (not rule_name_matches_shop_term(checked.get("rule_name", ""), shop_id, installments)
+        args = (str(self.root / "gaia_browser_data"), shop_id, installments)
+        checked = probe(*args, scene=scene) if scene == 1 else probe(*args)
+        rate = PRICE_RULE_RATES.get(str(shop_id), {}).get(int(installments)) if scene == 2 else None
+        rate_text = str(checked.get("rate_text", ""))
+        if (not rule_name_matches_shop_term(checked.get("rule_name", ""), shop_id, installments, scene)
                 or checked.get("submitted") is not False
-                or "浮动比例：" + rate not in checked.get("rate_text", "")):
+                or (rate and "浮动比例：" + rate not in rate_text)
+                or (not rate and not re.search(r"浮动比例\s*[:：]\s*\d+(?:\.\d+)?%", rate_text))):
             raise RuntimeError("当前盖亚分期规则的店铺 ID、期数或比例不一致，拒绝继续提交")
+        return checked
 
     @staticmethod
     def _confirmed_rejected_price_import(receipt, ids):
@@ -120,7 +129,8 @@ class GaiaUploadExecution:
             return batch
         return self.repository.mutate(batch_id, change)
 
-    def start(self, batch_id, *, shop_id, expected_hash, confirmed, installments=None, activity_name=None):
+    def start(self, batch_id, *, shop_id, expected_hash, confirmed, installments=None,
+              installment_terms=None, activity_name=None):
         if not self.enabled():
             raise RuntimeError("盖亚上传执行未启用")
         if confirmed is not True:
@@ -135,13 +145,42 @@ class GaiaUploadExecution:
         checked = self.inspect(current, shop_id)
         if not checked["ready"]:
             raise ValueError("；".join(checked["errors"]))
-        if installments is not None:
-            if str(installments) not in {"12", "24"}:
-                raise ValueError("分期数只能选择 12 期或 24 期")
-            if current.get("scene") != 2:
-                raise ValueError("自动分期仅支持直播货架场域")
-            if int(installments) not in PRICE_RULE_NAMES.get(str(shop_id), {}):
-                raise ValueError("该店铺缺少已核实的分期价格上浮规则")
+        split_ids = current.get("summary", {}).get("split_batch_ids") or [batch_id]
+        if (not isinstance(split_ids, list) or not split_ids or split_ids[0] != batch_id
+                or len(split_ids) != len(set(split_ids))):
+            raise ValueError("自动分表批次清单无效")
+        for index, part_id in enumerate(split_ids):
+            part = self.repository.get(part_id)
+            if (not part or part.get("state") != "validation_passed"
+                    or part.get("shop_id") != shop_id
+                    or any(part.get(field) != current.get(field) for field in (
+                        "source_hash", "mapping_version_id", "mapping_hash",
+                        "scene", "quality_ids", "create_count"))
+                    or part.get("summary", {}).get("split_part_index", index + 1) != index + 1
+                    or part.get("summary", {}).get("split_batch_ids", split_ids) != split_ids):
+                raise ValueError("自动分表第 %s 份状态或店铺不一致，请重新生成" % (index + 1))
+            products = part.get("summary", {}).get("expected_products")
+            if isinstance(products, list) and len(products) != 1:
+                raise ValueError("自动分表第 %s 份含 %s 个型号；旧多型号文件不可上传，请重新生成单型号文件" % (
+                    index + 1, len(products)))
+            inspection = self.inspect(part, shop_id)
+            if not inspection["ready"]:
+                raise ValueError("自动分表第 %s 份校验失败：%s" % (
+                    index + 1, "；".join(inspection["errors"])))
+        if installment_terms is not None and installments is not None:
+            raise ValueError("不能同时传入新旧分期参数")
+        if installment_terms is not None and not isinstance(installment_terms, list):
+            raise ValueError("分期期数必须为数组")
+        terms = required_cpay_terms(installment_terms if installment_terms is not None else installments) if (
+            installment_terms or installments is not None) else ()
+        if installment_terms == [] and activity_name:
+            raise ValueError("全款不需要分期免息活动名称")
+        price_term = max(terms) if terms else None
+        if price_term is not None:
+            if current.get("scene") not in {1, 2}:
+                raise ValueError("自动分期场域无效")
+            if str(shop_id) not in PRICE_RULE_NAMES:
+                raise ValueError("店铺 ID 不在已授权店铺清单中")
             expected = current.get("summary", {}).get("expected_products")
             if not isinstance(expected, list) or not expected:
                 raise ValueError("本批缺少商品型号清单，请重新生成后启动")
@@ -168,10 +207,14 @@ class GaiaUploadExecution:
             raise RuntimeError("盖亚浏览器正在处理另一批，请等待其结束")
         claimed = False
         try:
-            if installments is not None:
+            if price_term is not None:
                 from integrations.doudian.cpay_browser import probe_cpay_session
                 session_probe = self.activity_session_probe or probe_cpay_session
-                session_probe(str(self.root / "doudian_cpay_browser_data"), shop_id, activity_name)
+                cpay_profile = browser_profile_for_shop(self.root, "cpay", shop_id)
+                session_probe(str(cpay_profile), shop_id, activity_name)
+                # For new requests, prove the exact rule exists before creating Gaia goods.
+                if installment_terms is not None:
+                    self._verify_price_rule(shop_id, price_term, current["scene"])
             def claim(data):
                 nonlocal claimed
                 if data.get("gaia_receipt", {}).get("execution_key"):
@@ -185,10 +228,14 @@ class GaiaUploadExecution:
                     "phase": "uploading", "worker_pid": os.getpid(),
                     "message": "正在打开盖亚并上传生成文件；如提示登录，请在专用窗口登录",
                     "submit_intent": False, "doudian_published": False,
-                    "price_installments": int(installments) if installments is not None else None,
-                    "price_phase": "waiting_gaia" if installments is not None else "not_requested",
-                    "activity_name": activity_name if installments is not None else None,
-                    "activity_phase": "waiting_price" if installments is not None else "not_requested",
+                    "price_installments": price_term,
+                    "activity_terms": list(terms) if installment_terms is not None else None,
+                    "price_phase": "waiting_gaia" if price_term is not None else "not_requested",
+                    "activity_name": activity_name if price_term is not None else None,
+                    "activity_phase": "waiting_price" if price_term is not None else "not_requested",
+                    "split_phase": "running" if len(split_ids) > 1 else "not_requested",
+                    "split_completed_parts": 0,
+                    "split_total_parts": len(split_ids),
                 }
                 batch.updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
                 batch.events.append({"at": batch.updated_at, "action": "start_gaia_upload",
@@ -199,7 +246,8 @@ class GaiaUploadExecution:
             if not claimed:
                 handle.close()
                 return batch
-            thread = threading.Thread(target=self._run, args=(batch_id, shop_id, handle), daemon=True)
+            target = self._run_split_group if len(split_ids) > 1 else self._run
+            thread = threading.Thread(target=target, args=(batch_id, shop_id, handle), daemon=True)
             thread.start()
             return batch
         except Exception:
@@ -208,38 +256,122 @@ class GaiaUploadExecution:
                 self._update(batch_id, "manual_required", "执行器未启动；未提交盖亚", phase="failed")
             raise
 
-    def _run(self, batch_id, shop_id, handle):
+    def _run(self, batch_id, shop_id, handle, *, defer_price=False, close_handle=True):
         try:
             batch = self.repository.get(batch_id) or {}
             installments = (batch.get("gaia_receipt") or {}).get("price_installments")
             if installments is not None:
-                self._verify_price_rule(shop_id, installments)
+                self._verify_price_rule(shop_id, installments, batch.get("scene", 2))
             runner = self.runner
             if runner is None:
                 from integrations.gaia_browser.submit import submit_gaia_batch
                 runner = submit_gaia_batch
+            retry_history = []
+            run_id = batch_id
+            for attempt in range(13):
+                run_batch = self.repository.get(run_id) or {}
 
-            def before_submit():
-                self.verified(batch_id, shop_id)
-                self._update(batch_id, "gaia_submitted", "已记录提交意图，正在等待盖亚反馈；禁止重复提交",
-                             phase="submitting", submit_intent=True)
+                def before_submit(target_id=run_id):
+                    self.verified(target_id, shop_id)
+                    self._update(target_id, "gaia_submitted", "已记录提交意图，正在等待盖亚反馈；禁止重复提交",
+                                 phase="submitting", submit_intent=True)
 
-            result = runner(
-                work_dir=str(self.root), batch_id=batch_id, shop_id=shop_id,
-                profile_dir=str(self.root / "gaia_browser_data"),
-                artifact_dir=str(self.root / "panel_data" / "gaia_listing" / "browser_submit" / batch_id),
-                verify_handoff=lambda: self.verified(batch_id, shop_id), before_submit=before_submit,
-                check_cancelled=lambda: self.check_cancelled(batch_id),
-                auto_price=bool((self.repository.get(batch_id) or {}).get("gaia_receipt", {}).get("price_installments")),
-                expected_products=(self.repository.get(batch_id) or {}).get("summary", {}).get("expected_products"),
-            )
+                result = runner(
+                    work_dir=str(self.root), batch_id=run_id, shop_id=shop_id,
+                    profile_dir=str(self.root / "gaia_browser_data"),
+                    artifact_dir=str(self.root / "panel_data" / "gaia_listing" / "browser_submit" / run_id),
+                    verify_handoff=lambda target_id=run_id: self.verified(target_id, shop_id),
+                    before_submit=before_submit,
+                    check_cancelled=lambda: self.check_cancelled(run_id),
+                    auto_price=bool((self.repository.get(batch_id) or {}).get("gaia_receipt", {}).get("price_installments")),
+                    expected_products=run_batch.get("summary", {}).get("expected_products"),
+                )
+                pair = missing_goods_pair(result.get("feedback")) if result.get("outcome") == "rejected" else None
+                if not (pair and result.get("rejection_no_new_products_verified") is True):
+                    break
+                if attempt >= 12:
+                    result["recovery_error"] = "安全隔离次数超过 12 次，停止自动继续"
+                    break
+                if run_id != batch_id:
+                    self._update(run_id, "gaia_rejected", result.get("feedback", "盖亚拒绝"),
+                                 phase="rejected", result=result)
+                retry_history.append({"batch_id": run_id, "sku_id": pair[0],
+                                      "quality_id": pair[1], "zero_new_products_verified": True,
+                                      "feedback": result.get("feedback", "")})
+                try:
+                    from ..infrastructure.model_mapping_repository import ModelMappingRepository
+                    from ..infrastructure.excel_inspector import load_profiles
+                    remaining = create_remaining_batch(
+                        previous=dict(run_batch, state="gaia_rejected"), rejected_pair=pair,
+                        repository=self.repository,
+                        outputs_dir=self.root / "panel_data" / "gaia_listing" / "outputs",
+                        mapping_repository=ModelMappingRepository(
+                            self.root / "panel_data" / "gaia_listing" / "imports" / "model_mappings"),
+                        profiles=load_profiles(str(self.root / "config" / "gaia_excel_profiles.json")),
+                    )
+                except Exception as exc:
+                    result["recovery_error"] = str(exc).splitlines()[0][:600]
+                    break
+                self._update(batch_id, "gaia_submitted",
+                             "已隔离盖亚拒绝组合 %s / %s，正在继续上传其余商品" % pair,
+                             phase="submitting", retry_history=retry_history,
+                             retry_child_batch_id=remaining["id"] if remaining else None)
+                if remaining is None:
+                    result["recovery_error"] = "所有组合均被盖亚明确拒绝，没有可继续上传的行"
+                    break
+                run_id = remaining["id"]
+                self._update(run_id, "confirmed", "剩余安全组合准备上传", phase="uploading",
+                             execution_key=submission_idempotency_key(run_id, remaining["output_hash"]),
+                             submit_intent=False, doudian_published=False)
+            if run_id != batch_id:
+                terminal = "gaia_accepted" if result.get("outcome") == "accepted" else (
+                    "gaia_rejected" if result.get("outcome") == "rejected" else "manual_required")
+                self._update(run_id, terminal, result.get("feedback") or "子批次结果待核对",
+                             phase=result.get("outcome", "unknown"), result=result)
+                if terminal == "gaia_accepted":
+                    child_summary = (self.repository.get(run_id) or {}).get("summary", {})
+                    def adjust_parent(data):
+                        parent = GaiaBatch(**data)
+                        parent.summary.update({key: child_summary[key] for key in (
+                            "generated_rows", "expected_product_count", "expected_products")})
+                        parent.summary["skipped_pairs"] = [
+                            {"sku_id": item["sku_id"], "quality_id": item["quality_id"]}
+                            for item in retry_history
+                        ]
+                        return parent
+                    self.repository.mutate(batch_id, adjust_parent)
+            if retry_history:
+                result["retry_history"] = retry_history
             outcome = result.get("outcome", "unknown")
             state = {"accepted": "gaia_accepted", "rejected": "gaia_rejected"}.get(outcome, "manual_required")
             message = result.get("feedback") or "没有明确回执，请核对盖亚任务，禁止重复提交"
+            if result.get("recovery_error"):
+                state = "manual_required"
+                message = "安全续传已停止：" + result["recovery_error"]
             if state == "gaia_accepted":
-                message += "；仅表示盖亚已受理，逐行创建结果须在盖亚核对，未启动抖店发布"
-            self._update(batch_id, state, message, phase=outcome, result=result)
-            if state == "gaia_accepted":
+                current_receipt = (self.repository.get(batch_id) or {}).get("gaia_receipt") or {}
+                expected = (self.repository.get(batch_id) or {}).get("summary", {}).get("expected_product_count")
+                ids = result.get("verified_product_ids")
+                if (not isinstance(expected, int) or expected < 1 or not isinstance(ids, list)
+                        or len(ids) != expected or len(set(ids)) != expected):
+                    reason = (result.get("product_reconcile_error") or result.get("price_reconcile_error")
+                              or "未能核实本批新建商品 ID")
+                    state = "manual_required"
+                    message = "盖亚已受理，但新建商品未核实；抖店草稿未确认，禁止重复导入：" + reason
+                    if current_receipt.get("price_installments") is not None:
+                        self._update(batch_id, state, message, phase=outcome, result=result,
+                                     retry_history=retry_history,
+                                     price_phase="id_blocked", price_error=reason)
+                        return
+                else:
+                    message = f"已核实盖亚渠道新建 {len(ids)} 个商品；抖店草稿箱状态尚未核实，未启动抖店发布"
+                    if retry_history:
+                        skipped = "、".join("%s / 成色 %s" % (item["sku_id"], item["quality_id"])
+                                           for item in retry_history)
+                        message += "；已跳过 %s 个盖亚明确拒绝的组合：%s" % (len(retry_history), skipped)
+            self._update(batch_id, state, message, phase=outcome, result=result,
+                         retry_history=retry_history)
+            if state == "gaia_accepted" and not defer_price:
                 self._run_price_uplift(batch_id, shop_id, result)
         except Exception as exc:
             current = self.repository.get(batch_id) or {}
@@ -248,6 +380,88 @@ class GaiaUploadExecution:
                 message = ("提交结果不确定，禁止重试，请核对盖亚任务：" if intent else "上传前停止，未提交盖亚：")
                 self._update(batch_id, "manual_required", message + str(exc).splitlines()[0][:600],
                              phase="unknown" if intent else "failed")
+        finally:
+            if close_handle:
+                handle.close()
+                self._finish_stop(batch_id)
+
+    def _run_split_group(self, batch_id, shop_id, handle):
+        """Upload pre-generated model-sized files once, in order, under one lock.
+
+        A missing receipt or incomplete product reconciliation halts the whole
+        group. Already submitted files are never regenerated or replayed.
+        """
+        try:
+            root = self.repository.get(batch_id) or {}
+            part_ids = root.get("summary", {}).get("split_batch_ids") or []
+            if not part_ids or part_ids[0] != batch_id:
+                raise RuntimeError("自动分表批次清单已变化")
+            all_ids: list[str] = []
+            for index, part_id in enumerate(part_ids, start=1):
+                if index > 1:
+                    current = self.repository.get(batch_id) or {}
+                    if (current.get("gaia_receipt") or {}).get("split_phase") != "running":
+                        raise RuntimeError("自动分表执行状态已变化，后续文件未上传")
+                    part = self.repository.get(part_id) or {}
+                    if (part.get("state") != "validation_passed" or part.get("shop_id") != shop_id
+                            or part.get("summary", {}).get("split_batch_ids") != part_ids):
+                        raise RuntimeError("自动分表第 %s 份批次状态已变化" % index)
+                    check = self.inspect(part, shop_id)
+                    if not check["ready"]:
+                        raise RuntimeError("自动分表第 %s 份上传前校验失败：%s" % (
+                            index, "；".join(check["errors"])))
+                    self._update(part_id, "confirmed", "自动分表第 %s/%s 份准备上传" % (
+                        index, len(part_ids)), phase="uploading",
+                        execution_key=submission_idempotency_key(part_id, part["output_hash"]),
+                        worker_pid=os.getpid(), submit_intent=False, doudian_published=False)
+                    self._update(batch_id, "gaia_accepted", "第 %s/%s 份正在上传；已受理的文件不会重传" % (
+                        index, len(part_ids)), split_phase="running")
+                self._run(part_id, shop_id, handle, defer_price=True, close_handle=False)
+                finished = self.repository.get(part_id) or {}
+                receipt = finished.get("gaia_receipt") or {}
+                ids = (receipt.get("result") or {}).get("verified_product_ids")
+                expected = finished.get("summary", {}).get("expected_product_count")
+                if (finished.get("state") != "gaia_accepted" or not isinstance(ids, list)
+                        or not isinstance(expected, int) or len(ids) != expected
+                        or len(set(ids)) != expected or set(ids).intersection(all_ids)):
+                    reason = receipt.get("message") or "未核实本份新建商品，后续文件未上传"
+                    self._update(batch_id, "manual_required",
+                                 "自动分表在第 %s/%s 份停止；已受理文件不可重传：%s" % (
+                                     index, len(part_ids), reason),
+                                 split_phase="manual_required", split_completed_parts=index - 1)
+                    return
+                all_ids.extend(ids)
+                self._update(batch_id, "gaia_accepted", "第 %s/%s 份已受理并核实商品，准备下一份" % (
+                    index, len(part_ids)), split_phase="running", split_completed_parts=index)
+
+            def complete(data):
+                parent = GaiaBatch(**data)
+                if (parent.gaia_receipt.get("split_phase") != "running"
+                        or parent.gaia_receipt.get("split_completed_parts") != len(part_ids)):
+                    raise RuntimeError("自动分表汇总状态已变化")
+                products = parent.summary["split_total_products"]
+                if len(all_ids) != len(products):
+                    raise RuntimeError("自动分表商品 ID 总数与型号数不一致")
+                parent.summary["expected_product_count"] = len(products)
+                parent.summary["expected_products"] = products
+                result = dict(parent.gaia_receipt.get("result") or {})
+                result["verified_product_ids"] = list(all_ids)
+                parent.gaia_receipt.update(
+                    result=result, split_phase="done",
+                    message="%s 份盖亚文件已顺序受理，核实 %s 件商品" % (
+                        len(part_ids), len(all_ids)),
+                )
+                return parent
+            parent = self.repository.mutate(batch_id, complete)
+            installments = (parent.get("gaia_receipt") or {}).get("price_installments")
+            if installments is not None:
+                self._run_price_uplift(batch_id, shop_id, parent["gaia_receipt"]["result"])
+        except Exception as exc:
+            current = self.repository.get(batch_id) or {}
+            if current.get("state") != "cancelled":
+                self._update(batch_id, "manual_required",
+                             "自动分表执行中断，请核对已上传文件，禁止整批重试："
+                             + str(exc).splitlines()[0][:400], split_phase="manual_required")
         finally:
             handle.close()
             self._finish_stop(batch_id)
@@ -260,7 +474,7 @@ class GaiaUploadExecution:
         ids = result.get("verified_product_ids")
         expected = batch.get("summary", {}).get("expected_product_count")
         if not isinstance(ids, list) or len(ids) != expected:
-            reason = result.get("price_reconcile_error") or "未能唯一核实本批新建商品 ID"
+            reason = result.get("product_reconcile_error") or result.get("price_reconcile_error") or "未能唯一核实本批新建商品 ID"
             self._update(batch_id, "manual_required", "盖亚已受理；自动分期已停止：" + reason,
                          price_phase="id_blocked", price_error=reason)
             return
@@ -281,6 +495,7 @@ class GaiaUploadExecution:
                 self.repository.mutate(batch_id, linked)
             batch = self.repository.get(batch_id)
             prepared = prepare_price_uplift(batch, shop_id=shop_id, installments=installments)
+            rule_evidence = self._verify_price_rule(shop_id, installments, batch.get("scene", 2))
             template = self.price_template() if self.price_template else None
             if template is None:
                 raise RuntimeError("价格上浮官方模板在生成前已失效")
@@ -296,11 +511,16 @@ class GaiaUploadExecution:
                 self._update(batch_id, "doudian_drafts_matched", "已记录价格上浮提交意图；正在等待盖亚反馈",
                              price_phase="submitting", price_submit_intent=True)
 
+            extra = ({"scene": batch["scene"], "expected_rule_name": rule_evidence["rule_name"],
+                      "expected_rate_text": rule_evidence["rate_text"]}
+                     if batch.get("scene") == 1 or (batch.get("gaia_receipt") or {}).get("activity_terms") is not None
+                     else {})
             receipt = runner(
                 profile_dir=str(self.root / "gaia_browser_data"), shop_id=shop_id,
                 installments=installments, workbook_path=str(output),
                 artifact_dir=str(self.root / "panel_data" / "gaia_listing" / "browser_submit" / batch_id),
                 before_submit=before_price_submit, expected_product_ids=ids,
+                **extra,
             )
             if receipt.get("outcome") == "accepted":
                 self._update(batch_id, "handed_off", f"盖亚已受理；{installments} 期价格上浮导入已受理",
@@ -324,6 +544,7 @@ class GaiaUploadExecution:
         if receipt.get("activity_phase") not in {"waiting_price", "ready"}:
             return
         activity_name = receipt.get("activity_name")
+        selected_terms = receipt.get("activity_terms") if receipt.get("activity_terms") is not None else installments
         if (batch.get("state") != "handed_off" or receipt.get("price_phase") != "accepted"
                 or batch.get("doudian_draft_ids") != ids or not activity_name):
             self._update(batch_id, "manual_required", "分期活动报名条件已变化，未提交抖店",
@@ -335,8 +556,8 @@ class GaiaUploadExecution:
             from integrations.doudian.cpay_terms import required_cpay_terms
             runner = self.activity_runner or enroll_cpay_batch
             probe = self.activity_probe or verify_cpay_membership
-            precheck = probe(str(self.root / "env.local"), shop_id, installments, ids, attempts=1)
-            required_terms = set(required_cpay_terms(installments))
+            precheck = probe(str(self.root / "env.local"), shop_id, selected_terms, ids, attempts=1)
+            required_terms = set(required_cpay_terms(selected_terms))
             if any(required_terms.intersection(item.get("periods", []))
                    for item in (precheck.get("products") or {}).values()):
                 raise RuntimeError("本批已有商品报名目标期数，禁止重复创建活动")
@@ -355,17 +576,17 @@ class GaiaUploadExecution:
             self._update(batch_id, "handed_off", "正在核对抖店店铺、活动名称、期数和本批商品 ID",
                          activity_phase="preparing")
             result = runner(
-                profile_dir=str(self.root / "doudian_cpay_browser_data"),
-                batch_id=batch_id, shop_id=shop_id, installments=installments,
+                profile_dir=str(browser_profile_for_shop(self.root, "cpay", shop_id)),
+                batch_id=batch_id, shop_id=shop_id, installments=selected_terms,
                 activity_name=activity_name,
                 product_ids=ids, before_submit=before_activity_submit,
             )
             if result.get("outcome") != "submitted_unverified":
                 raise RuntimeError("抖店报名提交未得到可核对回执")
-            verified = probe(str(self.root / "env.local"), shop_id, installments, ids)
+            verified = probe(str(self.root / "env.local"), shop_id, selected_terms, ids)
             if verified.get("confirmed"):
                 self._update(batch_id, "handed_off",
-                             f"盖亚价格上浮和抖店 {'、'.join(map(str, required_cpay_terms(installments)))} 期活动已完成；{len(ids)} 件商品已回读报名期数",
+                             f"盖亚价格上浮和抖店 {'、'.join(map(str, required_cpay_terms(selected_terms)))} 期活动已完成；{len(ids)} 件商品已回读报名期数",
                              activity_phase="verified", activity_result=result,
                              activity_readback=verified)
             else:
@@ -400,7 +621,7 @@ class GaiaUploadExecution:
                 or attempts >= 2 or receipt.get("submit_intent") is not True
                 or not isinstance(ids, list) or not ids or ids != verified
                 or len(ids) != batch.get("summary", {}).get("expected_product_count")
-                or installments not in PRICE_RULE_NAMES.get(str(shop_id), {})):
+                or str(shop_id) not in PRICE_RULE_NAMES or installments not in {6, 12, 24}):
             raise RuntimeError("仅允许价格尚未提交或有明确失败回执且商品未入规则的批次最多恢复两次")
         if self.price_template is None or self.price_template() is None:
             raise RuntimeError("未找到已校验的价格上浮官方导入模板")
@@ -413,11 +634,12 @@ class GaiaUploadExecution:
             handle.close()
             raise RuntimeError("盖亚浏览器正在处理另一批，请等待其结束")
         try:
-            self._verify_price_rule(shop_id, installments)
+            self._verify_price_rule(shop_id, installments, batch.get("scene", 2))
             if rejected_retry:
                 from integrations.gaia_browser.price_rule_probe import probe_rule_membership
                 current_membership = probe_rule_membership(
                     str(self.root / "gaia_browser_data"), shop_id, installments, ids,
+                    **({"scene": batch["scene"]} if batch.get("scene") == 1 else {}),
                 )
                 if current_membership.get("found_ids") or set(current_membership.get("missing_ids") or []) != set(ids):
                     raise RuntimeError("规则中已有目标商品或核对不完整，禁止重复导入")
@@ -456,6 +678,16 @@ class GaiaUploadExecution:
     def recover_interrupted(self, batch):
         """A dead worker is not an eternally running job and must not be replayed."""
         receipt = batch.get("gaia_receipt", {})
+        if receipt.get("split_phase") == "running":
+            try:
+                os.kill(int(receipt.get("worker_pid", 0)), 0)
+            except (ProcessLookupError, ValueError):
+                return self._update(batch["id"], "manual_required",
+                                    "自动分表进程已中断；请逐份核对盖亚结果，禁止整批重试",
+                                    split_phase="manual_required")
+            except PermissionError:
+                pass
+            return batch
         price_running = (batch.get("state") in {"gaia_accepted", "doudian_drafts_matched"}
                          and receipt.get("price_phase") in {"waiting_gaia", "ids_verified", "submitting"})
         if price_running:

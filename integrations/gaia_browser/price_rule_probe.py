@@ -16,11 +16,11 @@ from app.gaia_listing.application.price_uplift import (
 RULES_URL = "https://gaiya.jd.com/product/liveStreamManagement/liveProductRules"
 
 
-def locate_price_rule(page, shop_id: str, installments: int):
-    """Scan all rule pages by shop ID and term, without depending on shop names."""
+def locate_price_rule(page, shop_id: str, installments: int, scene: int = 2):
+    """Scan every page for one enabled rule matching ID, term and scene."""
     shop_id = str(shop_id)
-    if int(installments) not in PRICE_RULE_NAMES.get(shop_id, {}):
-        raise PriceUpliftError("店铺与分期没有已核实的价格规则")
+    if shop_id not in PRICE_RULE_NAMES or int(installments) not in {6, 12, 24} or scene not in {1, 2}:
+        raise PriceUpliftError("店铺、期数或场域不在允许范围")
     page.locator(".ant-spin-blur").wait_for(state="hidden", timeout=10000)
     page.locator("table tbody tr").filter(visible=True).first.wait_for(state="visible", timeout=10000)
     matches = []
@@ -28,7 +28,7 @@ def locate_price_rule(page, shop_id: str, installments: int):
         rows = page.locator("table tbody tr").filter(visible=True)
         for row in rows.all():
             cells = [value.strip() for value in row.locator("td").all_inner_texts()]
-            if cells and rule_name_matches_shop_term(cells[0], shop_id, installments):
+            if cells and rule_name_matches_shop_term(cells[0], shop_id, installments, scene):
                 matches.append((page_number, cells))
         next_item = page.locator(".ant-pagination-next").filter(visible=True)
         if next_item.count() == 0 or "ant-pagination-disabled" in (next_item.first.get_attribute("class") or ""):
@@ -45,11 +45,12 @@ def locate_price_rule(page, shop_id: str, installments: int):
     if len(matches) != 1:
         raise PriceUpliftError(f"店铺 {shop_id} 的 {installments} 期价格规则命中 {len(matches)} 条，不能唯一选择")
     target_page, cells = matches[0]
-    expected_rate = PRICE_RULE_RATES[shop_id][int(installments)]
-    if (len(cells) < 3 or cells[1] != "启用" or not re.search(
-        rf"(?<![\d.]){re.escape(expected_rate)}(?![\d.])", cells[2]
-    )):
-        raise PriceUpliftError("规则启用状态或上浮比例与期数不一致")
+    expected_rate = PRICE_RULE_RATES.get(shop_id, {}).get(int(installments)) if scene == 2 else None
+    if (len(cells) < 3 or cells[1] != "启用"
+            or (expected_rate and not re.search(
+                rf"(?<![\d.]){re.escape(expected_rate)}(?![\d.])", cells[2]))
+            or (not expected_rate and not re.search(r"浮动比例\s*[:：]\s*\d+(?:\.\d+)?%", cells[2]))):
+        raise PriceUpliftError("规则启用状态或上浮比例无法核实")
     # Return to the page containing the unique ID-and-term match.
     for _ in range(page_number - target_page):
         previous = page.locator(".ant-pagination-prev").filter(visible=True)
@@ -99,7 +100,7 @@ def probe_rules(profile_dir: str) -> dict:
 
 
 def probe_exact_rule(profile_dir: str, shop_id: str, installments: int,
-                     inspect_import: bool = False) -> dict:
+                     inspect_import: bool = False, scene: int = 2) -> dict:
     """Open the ID-and-term-matched edit page, without uploading a file."""
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(
@@ -112,7 +113,7 @@ def probe_exact_rule(profile_dir: str, shop_id: str, installments: int,
             page.goto(RULES_URL, wait_until="domcontentloaded", timeout=30000)
             page.get_by_text("价格上浮", exact=True).first.wait_for(state="visible", timeout=15000)
             page.locator("table tbody tr").filter(visible=True).first.wait_for(state="visible", timeout=15000)
-            matched, columns = locate_price_rule(page, shop_id, installments)
+            matched, columns = locate_price_rule(page, shop_id, installments, scene)
             rule_name = columns[0]
             edit = matched.get_by_role("button", name="编辑", exact=True)
             if edit.count() != 1:
@@ -131,7 +132,7 @@ def probe_exact_rule(profile_dir: str, shop_id: str, installments: int,
                 raise PriceUpliftError("编辑页策略名称与所选规则不一致")
             if "ruleType=priceIncrease" not in detail.url or "type=edit" not in detail.url:
                 raise PriceUpliftError("打开的不是价格上浮编辑页")
-            result = {"shop_id": str(shop_id), "installments": int(installments),
+            result = {"shop_id": str(shop_id), "installments": int(installments), "scene": scene,
                       "rule_name": rule_name, "rule_url": detail.url,
                       "rate_text": columns[2], "import_button_visible": True,
                       "submitted": False}
@@ -150,9 +151,9 @@ def probe_exact_rule(profile_dir: str, shop_id: str, installments: int,
 
 
 def probe_rule_membership(profile_dir: str, shop_id: str, installments: int,
-                          product_ids: list[str]) -> dict:
+                          product_ids: list[str], scene: int = 2) -> dict:
     """Read-only confirmation that a rejected import left no target IDs behind."""
-    rule = probe_exact_rule(profile_dir, shop_id, installments)
+    rule = probe_exact_rule(profile_dir, shop_id, installments, scene=scene)
     from .price_rule_upload import _read_rule_product_ids
     with sync_playwright() as playwright:
         context = playwright.chromium.launch_persistent_context(

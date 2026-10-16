@@ -34,6 +34,179 @@ class GaiaUploadExecutionTests(unittest.TestCase):
                 self.start(service, **values)
         self.assertEqual('validation_passed', self.repo.get('abc123')['state'])
 
+    def test_old_multi_model_file_is_rejected_before_browser_start(self):
+        self.batch.summary['expected_products'] = [
+            {'brand': '一加', 'model': '一加 10 Pro'},
+            {'brand': '一加', 'model': '一加 9 Pro'},
+        ]
+        self.repo.save(self.batch)
+        service = self.service(lambda **kwargs: self.fail('must not execute'))
+        with self.assertRaisesRegex(ValueError, '旧多型号文件不可上传'):
+            self.start(service)
+        self.assertEqual('validation_passed', self.repo.get('abc123')['state'])
+
+    def test_split_group_uploads_each_file_once_in_order(self):
+        ids = ['abc123', 'def456']
+        self.batch.summary.update(
+            split_batch_ids=ids, split_part_index=1, split_part_total=2,
+            split_total_products=[{'brand': '小米', 'model': '18 Pro'},
+                                  {'brand': '小米', 'model': '18 Ultra'}],
+            expected_product_count=1,
+            expected_products=[{'brand': '小米', 'model': '18 Pro'}],
+        )
+        self.repo.save(self.batch)
+        child = GaiaBatch(**self.batch.to_dict())
+        child.id = 'def456'
+        child.output_hash = 'childhash'
+        child.summary = dict(self.batch.summary, split_part_index=2,
+                             expected_products=[{'brand': '小米', 'model': '18 Ultra'}])
+        self.repo.save(child)
+        calls = []
+        def runner(**kwargs):
+            calls.append(kwargs['batch_id'])
+            kwargs['verify_handoff']()
+            kwargs['before_submit']()
+            return {'outcome': 'accepted', 'feedback': '导入成功',
+                    'verified_product_ids': ['9001' if kwargs['batch_id'] == 'abc123' else '9002']}
+        service = self.service(runner)
+        with patch('app.gaia_listing.application.upload_execution.threading.Thread') as thread:
+            thread.side_effect = lambda target, args, **kw: type(
+                'Inline', (), {'start': lambda self: target(*args)})()
+            self.start(service)
+        parent = self.repo.get('abc123')
+        self.assertEqual(['abc123', 'def456'], calls)
+        self.assertEqual('done', parent['gaia_receipt']['split_phase'])
+        self.assertEqual(['9001', '9002'], parent['gaia_receipt']['result']['verified_product_ids'])
+        self.assertEqual(2, parent['summary']['expected_product_count'])
+        self.assertEqual('gaia_accepted', self.repo.get('def456')['state'])
+
+    def test_live_count_chunks_of_same_model_are_not_collapsed(self):
+        ids = ['abc123', 'def456', 'fed789']
+        chunks = [
+            {'brand': '华为', 'model': '华为 Mate X6',
+             'chunk_index': index, 'chunk_total': 3}
+            for index in range(1, 4)
+        ]
+        self.batch.summary.update(
+            split_batch_ids=ids, split_part_index=1, split_part_total=3,
+            split_total_products=chunks, expected_product_count=1,
+            expected_products=[{'brand': '华为', 'model': '华为 Mate X6'}],
+        )
+        self.repo.save(self.batch)
+        for index, part_id in enumerate(ids[1:], start=2):
+            child = GaiaBatch(**self.batch.to_dict())
+            child.id = part_id
+            child.output_hash = 'hash' + str(index)
+            child.summary = dict(
+                self.batch.summary, split_part_index=index,
+                expected_products=[{'brand': '华为', 'model': '华为 Mate X6'}],
+            )
+            self.repo.save(child)
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs['batch_id'])
+            kwargs['verify_handoff']()
+            kwargs['before_submit']()
+            return {'outcome': 'accepted', 'feedback': '导入成功',
+                    'verified_product_ids': ['product-' + str(len(calls))]}
+
+        service = self.service(runner)
+        with patch('app.gaia_listing.application.upload_execution.threading.Thread') as thread:
+            thread.side_effect = lambda target, args, **kw: type(
+                'Inline', (), {'start': lambda self: target(*args)})()
+            self.start(service)
+        parent = self.repo.get('abc123')
+        self.assertEqual(ids, calls)
+        self.assertEqual('done', parent['gaia_receipt']['split_phase'])
+        self.assertEqual(3, parent['summary']['expected_product_count'])
+        self.assertEqual(['华为 Mate X6'] * 3,
+                         [item['model'] for item in parent['summary']['expected_products']])
+        self.assertEqual(['product-1', 'product-2', 'product-3'],
+                         parent['gaia_receipt']['result']['verified_product_ids'])
+
+    def test_split_group_stops_after_uncertain_second_file(self):
+        ids = ['abc123', 'def456', 'fed789']
+        self.batch.summary.update(
+            split_batch_ids=ids, split_part_index=1, split_part_total=3,
+            split_total_products=[{'brand': '小米', 'model': name}
+                                  for name in ('18 Pro', '18 Ultra', '18 Pro Max')],
+            expected_product_count=1,
+            expected_products=[{'brand': '小米', 'model': '18 Pro'}],
+        )
+        self.repo.save(self.batch)
+        for index, part_id in enumerate(ids[1:], start=2):
+            child = GaiaBatch(**self.batch.to_dict())
+            child.id = part_id
+            child.output_hash = 'hash' + str(index)
+            child.summary = dict(self.batch.summary, split_part_index=index,
+                                 expected_products=[self.batch.summary['split_total_products'][index - 1]])
+            self.repo.save(child)
+        calls = []
+        def runner(**kwargs):
+            calls.append(kwargs['batch_id'])
+            kwargs['verify_handoff']()
+            kwargs['before_submit']()
+            if len(calls) == 2:
+                raise TimeoutError('提交回执丢失')
+            return {'outcome': 'accepted', 'feedback': '导入成功', 'verified_product_ids': ['9001']}
+        service = self.service(runner)
+        with patch('app.gaia_listing.application.upload_execution.threading.Thread') as thread:
+            thread.side_effect = lambda target, args, **kw: type(
+                'Inline', (), {'start': lambda self: target(*args)})()
+            self.start(service)
+        self.assertEqual(ids[:2], calls)
+        self.assertEqual('manual_required', self.repo.get('abc123')['state'])
+        self.assertEqual('validation_passed', self.repo.get('fed789')['state'])
+        self.assertEqual(1, self.repo.get('abc123')['gaia_receipt']['split_completed_parts'])
+
+    def test_split_group_runs_price_stage_once_after_all_files(self):
+        ids = ['abc123', 'def456']
+        self.batch.summary.update(
+            split_batch_ids=ids, split_part_index=1, split_part_total=2,
+            split_total_products=[{'brand': '小米', 'model': '18 Pro'},
+                                  {'brand': '小米', 'model': '18 Ultra'}],
+            expected_product_count=1,
+            expected_products=[{'brand': '小米', 'model': '18 Pro'}],
+        )
+        self.repo.save(self.batch)
+        child = GaiaBatch(**self.batch.to_dict())
+        child.id = 'def456'
+        child.output_hash = 'childhash'
+        child.summary = dict(self.batch.summary, split_part_index=2,
+                             expected_products=[{'brand': '小米', 'model': '18 Ultra'}])
+        self.repo.save(child)
+        def runner(**kwargs):
+            kwargs['before_submit']()
+            return {'outcome': 'accepted', 'feedback': '导入成功',
+                    'verified_product_ids': ['9001' if kwargs['batch_id'] == 'abc123' else '9002']}
+        service = GaiaUploadExecution(
+            self.tmp.name, self.repo, lambda batch, shop: {'ready': True},
+            lambda: True, runner=runner, price_template=lambda: '/template',
+            activity_session_probe=lambda *args: None,
+        )
+        price_calls = []
+        service._verify_price_rule = lambda *args: {'rule_name': 'rule', 'rate_text': '浮动比例：4.3%', 'submitted': False}
+        service._run_price_uplift = lambda batch_id, shop_id, result: price_calls.append(
+            (batch_id, result['verified_product_ids']))
+        with patch('app.gaia_listing.application.upload_execution.threading.Thread') as thread:
+            thread.side_effect = lambda target, args, **kw: type(
+                'Inline', (), {'start': lambda self: target(*args)})()
+            self.start(service, installment_terms=[12], activity_name='【单品报名】活动')
+        self.assertEqual([('abc123', ['9001', '9002'])], price_calls)
+
+    def test_dead_split_worker_requires_manual_reconciliation(self):
+        self.batch.state = 'gaia_accepted'
+        self.batch.gaia_receipt = {'split_phase': 'running', 'worker_pid': 99999999,
+                                   'submit_intent': True}
+        self.repo.save(self.batch)
+        service = self.service(lambda **kwargs: self.fail('must not resubmit'))
+        with patch('app.gaia_listing.application.upload_execution.os.kill',
+                   side_effect=ProcessLookupError):
+            recovered = service.recover_interrupted(self.repo.get('abc123'))
+        self.assertEqual('manual_required', recovered['state'])
+        self.assertEqual('manual_required', recovered['gaia_receipt']['split_phase'])
+
     def test_repeated_start_is_single_execution_and_other_batch_cannot_share_browser(self):
         entered, release = threading.Event(), threading.Event()
         calls = []
@@ -64,7 +237,8 @@ class GaiaUploadExecutionTests(unittest.TestCase):
             started_threads[0].join(3)
         self.assertEqual(1, len(calls))
         result = self.repo.get('abc123')
-        self.assertEqual('gaia_accepted', result['state'])
+        self.assertEqual('manual_required', result['state'])
+        self.assertIn('草稿未确认', result['gaia_receipt']['message'])
         self.assertTrue(result['gaia_receipt']['submit_intent'])
         self.assertFalse(result['gaia_receipt']['doudian_published'])
         self.start(service)
@@ -83,6 +257,65 @@ class GaiaUploadExecutionTests(unittest.TestCase):
         self.assertEqual('manual_required', result['state'])
         self.assertEqual('unknown', result['gaia_receipt']['phase'])
         self.assertIn('禁止重试', result['gaia_receipt']['message'])
+
+    def test_atomic_goods_rejection_continues_once_with_new_child_batch(self):
+        self.batch.summary.update(expected_product_count=1,
+                                  expected_products=[{'brand': '小米', 'model': '18 Pro'}])
+        self.repo.save(self.batch)
+        calls = []
+        def runner(**kwargs):
+            calls.append(kwargs['batch_id'])
+            kwargs['verify_handoff']()
+            kwargs['before_submit']()
+            if len(calls) == 1:
+                return {'outcome': 'rejected', 'feedback':
+                        '第1行：标品ID[111]和抖音成色ID[95]未找到对应的goodsId',
+                        'rejection_no_new_products_verified': True}
+            return {'outcome': 'accepted', 'feedback': '导入成功',
+                    'verified_product_ids': ['3848232983685366112']}
+        def create_child(**kwargs):
+            self.assertEqual(('111', '95'), kwargs['rejected_pair'])
+            child = GaiaBatch(**self.batch.to_dict())
+            child.id = 'def456'
+            child.state = 'validation_passed'
+            child.output_hash = 'childhash'
+            child.gaia_receipt = {}
+            child.summary = dict(self.batch.summary, generated_rows=1)
+            self.repo.save(child)
+            return child.to_dict()
+        service = self.service(runner)
+        with patch('app.gaia_listing.application.upload_execution.create_remaining_batch',
+                   side_effect=create_child), \
+             patch('app.gaia_listing.infrastructure.excel_inspector.load_profiles',
+                   return_value=[]), \
+             patch('app.gaia_listing.application.upload_execution.threading.Thread') as thread:
+            thread.side_effect = lambda target, args, **kw: type(
+                'Inline', (), {'start': lambda self: target(*args)})()
+            self.start(service)
+        self.assertEqual(['abc123', 'def456'], calls, self.repo.get('abc123'))
+        parent = self.repo.get('abc123')
+        self.assertEqual('gaia_accepted', parent['state'])
+        self.assertEqual('gaia_accepted', self.repo.get('def456')['state'])
+        self.assertEqual('111', parent['gaia_receipt']['retry_history'][0]['sku_id'])
+        self.assertEqual(['3848232983685366112'],
+                         parent['gaia_receipt']['result']['verified_product_ids'])
+        self.assertIn('已跳过 1 个', parent['gaia_receipt']['message'])
+
+    def test_goods_rejection_without_zero_product_proof_never_resubmits(self):
+        calls = []
+        def runner(**kwargs):
+            calls.append(kwargs['batch_id'])
+            kwargs['before_submit']()
+            return {'outcome': 'rejected',
+                    'feedback': '第1行：标品ID[111]和抖音成色ID[95]未找到对应的goodsId',
+                    'rejection_no_new_products_verified': False}
+        service = self.service(runner)
+        with patch('app.gaia_listing.application.upload_execution.threading.Thread') as thread:
+            thread.side_effect = lambda target, args, **kw: type(
+                'Inline', (), {'start': lambda self: target(*args)})()
+            self.start(service)
+        self.assertEqual(['abc123'], calls)
+        self.assertEqual('gaia_rejected', self.repo.get('abc123')['state'])
 
     def test_cancel_during_browser_preparation_prevents_submit(self):
         def runner(**kwargs):
@@ -147,7 +380,27 @@ class GaiaUploadExecutionTests(unittest.TestCase):
         with patch('app.gaia_listing.application.upload_execution.threading.Thread') as thread:
             thread.side_effect = lambda target, args, **kw: type('Inline', (), {'start': lambda self: target(*args)})()
             self.start(service)
-        self.assertEqual('gaia_accepted', self.repo.get('abc123')['state'])
+        self.assertEqual('manual_required', self.repo.get('abc123')['state'])
+        self.assertTrue(self.repo.get('abc123')['gaia_receipt']['submit_intent'])
+
+    def test_full_payment_requires_new_product_readback_before_acceptance(self):
+        self.batch.summary.update(expected_product_count=1,
+                                  expected_products=[{'brand': '苹果', 'model': 'iPhone 17 Pro'}])
+        self.repo.save(self.batch)
+
+        def runner(**kwargs):
+            self.assertFalse(kwargs['auto_price'])
+            kwargs['before_submit']()
+            return {'outcome': 'accepted', 'feedback': '导入成功',
+                    'verified_product_ids': ['3847298731712053572']}
+
+        with patch('app.gaia_listing.application.upload_execution.threading.Thread') as thread:
+            thread.side_effect = lambda target, args, **kw: type('Inline', (), {'start': lambda self: target(*args)})()
+            self.start(self.service(runner))
+        result = self.repo.get('abc123')
+        self.assertEqual('gaia_accepted', result['state'])
+        self.assertEqual([], result['doudian_draft_ids'])
+        self.assertIn('抖店草稿箱状态尚未核实', result['gaia_receipt']['message'])
 
     def test_stopped_dead_worker_finishes_cleanup_without_submit(self):
         self.batch.state = 'cancelled'
@@ -266,6 +519,35 @@ class GaiaUploadExecutionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '未登录'):
             self.start(service, installments=12, activity_name='【专享】年框商家双11大回馈')
         self.assertEqual('validation_passed', self.repo.get('abc123')['state'])
+
+    def test_cpay_preflight_uses_shop_specific_profile_before_any_submit(self):
+        self.batch.summary['expected_products'] = [{'brand': '苹果', 'model': 'iPhone 17 Pro'}]
+        self.repo.save(self.batch)
+        second = GaiaBatch(**self.batch.to_dict())
+        second.id = 'def456'
+        second.shop_id = '636781'
+        self.repo.save(second)
+        template = Path(self.tmp.name) / 'price_template.xlsx'
+        make_template(template)
+        visited = []
+
+        def reject_after_profile(profile, shop, activity):
+            visited.append((profile, shop))
+            raise RuntimeError('登录校验未通过')
+
+        service = GaiaUploadExecution(
+            self.tmp.name, self.repo, lambda batch, shop: {'ready': True}, lambda: True,
+            runner=lambda **kwargs: self.fail('must not create Gaia product'),
+            price_template=lambda: template, activity_session_probe=reject_after_profile,
+        )
+        for batch_id, shop_id in [('abc123', '7970406'), ('def456', '636781')]:
+            with self.assertRaisesRegex(RuntimeError, '登录校验未通过'):
+                service.start(batch_id, shop_id=shop_id, expected_hash='outputhash',
+                              confirmed=True, installment_terms=[6], activity_name='【6期免息】')
+            self.assertEqual('validation_passed', self.repo.get(batch_id)['state'])
+        self.assertNotEqual(visited[0][0], visited[1][0])
+        self.assertTrue(visited[0][0].endswith('/browser_profiles/listing/7970406'))
+        self.assertTrue(visited[1][0].endswith('/browser_profiles/listing/636781'))
 
     def test_missing_product_id_never_uploads_price_rule(self):
         self.batch.summary.update(expected_product_count=1,
@@ -462,6 +744,75 @@ class GaiaUploadExecutionTests(unittest.TestCase):
         self.assertEqual('manual_required', result['state'])
         self.assertFalse(result['gaia_receipt']['submit_intent'])
         self.assertIn('未找到精确匹配', result['gaia_receipt']['message'])
+
+    def test_selected_terms_use_highest_room_rule_and_exact_cpay_terms(self):
+        self.batch.scene = 1
+        self.batch.summary.update(expected_product_count=1,
+                                  expected_products=[{'brand': '苹果', 'model': 'iPhone 17 Pro'}])
+        self.repo.save(self.batch)
+        template = Path(self.tmp.name) / 'price_template.xlsx'
+        make_template(template)
+        product_id = '3847298731712053572'
+        calls = {'rules': [], 'prices': [], 'activity': []}
+
+        def rule_probe(profile, shop, term, *, scene):
+            calls['rules'].append((shop, term, scene))
+            return {'rule_name': '直播间-测试店铺【7970406】-24期',
+                    'rate_text': '浮动比例：9%', 'submitted': False}
+
+        def gaia_runner(**kwargs):
+            kwargs['before_submit']()
+            return {'outcome': 'accepted', 'feedback': '导入成功',
+                    'verified_product_ids': [product_id]}
+
+        def price_runner(**kwargs):
+            calls['prices'].append(kwargs)
+            kwargs['before_submit']()
+            return {'outcome': 'accepted', 'feedback': '导入成功'}
+
+        def activity_runner(**kwargs):
+            calls['activity'].append(kwargs)
+            kwargs['before_submit']()
+            return {'outcome': 'submitted_unverified'}
+
+        service = GaiaUploadExecution(
+            self.tmp.name, self.repo, lambda batch, shop: {'ready': True}, lambda: True,
+            gaia_runner, price_template=lambda: template, price_runner=price_runner,
+            price_probe=rule_probe, activity_runner=activity_runner,
+            activity_probe=lambda env, shop, terms, ids, **kw: {
+                'confirmed': kw.get('attempts') != 1,
+                'products': {ids[0]: {'periods': [] if kw.get('attempts') == 1 else [6, 12, 24],
+                                      'activity_id': 'activity-1'}}},
+            activity_session_probe=lambda profile, shop, activity: {'ready': True},
+        )
+        with patch('app.gaia_listing.application.upload_execution.threading.Thread') as thread:
+            thread.side_effect = lambda target, args, **kw: type('Inline', (), {'start': lambda self: target(*args)})()
+            self.start(service, installment_terms=[6, 12, 24], activity_name='部分商品报名')
+        result = self.repo.get('abc123')
+        self.assertEqual('verified', result['gaia_receipt']['activity_phase'])
+        self.assertEqual([6, 12, 24], result['gaia_receipt']['activity_terms'])
+        self.assertEqual(24, result['gaia_receipt']['price_installments'])
+        self.assertTrue(all(call == ('7970406', 24, 1) for call in calls['rules']))
+        self.assertEqual(1, len(calls['prices']))
+        self.assertEqual(1, calls['prices'][0]['scene'])
+        self.assertEqual([6, 12, 24], calls['activity'][0]['installments'])
+
+    def test_missing_six_term_rule_stops_before_gaia_submission(self):
+        self.batch.summary['expected_products'] = [{'brand': '苹果', 'model': 'iPhone 17 Pro'}]
+        self.repo.save(self.batch)
+        template = Path(self.tmp.name) / 'price_template.xlsx'
+        make_template(template)
+        service = GaiaUploadExecution(
+            self.tmp.name, self.repo, lambda batch, shop: {'ready': True}, lambda: True,
+            runner=lambda **kwargs: self.fail('must not create Gaia goods'),
+            price_template=lambda: template,
+            price_probe=lambda profile, shop, term: (_ for _ in ()).throw(
+                RuntimeError('该店铺没有 6 期规则')),
+            activity_session_probe=lambda profile, shop, activity: {'ready': True},
+        )
+        with self.assertRaisesRegex(RuntimeError, '没有 6 期规则'):
+            self.start(service, installment_terms=[6], activity_name='部分商品报名')
+        self.assertEqual('validation_passed', self.repo.get('abc123')['state'])
 
 
 if __name__ == '__main__':

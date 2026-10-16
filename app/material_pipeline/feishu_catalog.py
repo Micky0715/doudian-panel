@@ -455,7 +455,7 @@ class FeishuMaterialCatalog:
                 )
             if folder_index is not None:
                 model_folder = folders[folder_index]
-                return self._main_files_from_remote_folder(model_folder), folder_evidence
+                return self._main_files_from_remote_folder(model_folder, brand, model), folder_evidence
 
             next_frontier: list[str] = []
             for entry in folders:
@@ -623,7 +623,7 @@ class FeishuMaterialCatalog:
         )
 
     def _main_files_from_remote_folder(
-        self, model_folder: RemoteDriveEntry | None,
+        self, model_folder: RemoteDriveEntry | None, brand: str, model: str,
     ) -> tuple[RemoteDriveFile, ...]:
         files, has_main_child = self._files_in_optional_child(
             model_folder, "主图", library="飞书店铺主图",
@@ -632,8 +632,31 @@ class FeishuMaterialCatalog:
         if named:
             return (self._pick_main(named),)
         if not has_main_child:
-            # Legacy flat directory requires the stable 主图.* filename.  It
-            # must not mistake a colocated white image for a store main image.
+            # Some operators keep the cover below extra wrapper folders and
+            # name it after the exact model rather than 主图.*.  Only accept a
+            # model-identical filename within the already verified shop/model
+            # directory; never use an arbitrary colocated colour image.
+            expected = model_key(model)
+            frontier = [model_folder.token] if model_folder else []
+            visited = set(frontier)
+            for _depth in range(self.max_depth + 1):
+                matches: list[RemoteDriveFile] = []
+                next_frontier: list[str] = []
+                for token in frontier:
+                    for entry in self._entries(token):
+                        if entry.entry_type == "folder" and entry.token not in visited:
+                            visited.add(entry.token)
+                            next_frontier.append(entry.token)
+                        elif entry.entry_type == "file":
+                            stem = _image_stem(entry.name)
+                            if (stem and image_model_leaf_allowed(brand, stem)
+                                    and model_key(stem.replace("_", " ")) == expected):
+                                matches.append(RemoteDriveFile.from_entry(entry))
+                if matches:
+                    return (self._pick_main(matches),)
+                frontier = next_frontier
+                if not frontier:
+                    break
             return ()
         candidates = self._image_files(files)
         # The explicit 主图 folder is already bound to the selected model.

@@ -19,6 +19,14 @@ class ModelMappingRecord:
     model: str
     standard_sku_id: str
     category: str = "手机"
+    # None means a legacy/operator mapping has no goods-level quality evidence.
+    # An empty dict means the export was checked but has no supported goods.
+    goods_by_quality: dict[str, list[str]] | None = None
+
+    def goods_for_quality(self, quality_id: str) -> list[str] | None:
+        if self.goods_by_quality is None:
+            return None
+        return list(self.goods_by_quality.get(str(quality_id), []))
 
     def __post_init__(self) -> None:
         if not str(self.brand or "").strip():

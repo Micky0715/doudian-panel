@@ -91,6 +91,33 @@ class GaiaListingApiTests(unittest.TestCase):
                 'file': (io.BytesIO('品牌,型号,标品ID,品类\n苹果,iPhone 16,123456,手机\n'.encode()), 'mapping.csv'),
             }, content_type='multipart/form-data').get_json()['mapping']
             repo = GaiaBatchRepository(str(root_path / 'panel_data/gaia_listing/batches'))
+            quality_link_payload = {
+                'shop_id': '5576543', 'source_path': str(template),
+                'mapping_version_id': mapping['id'], 'quality_label': '99新',
+                'selected_sku_ids': ['123456'], 'scene': 2, 'create_count': 1,
+                'quality_link': '0',
+            }
+            link_preview_response = client.post('/api/gaia/batches/preview', json=quality_link_payload)
+            self.assertEqual(200, link_preview_response.status_code, link_preview_response.get_json())
+            link_preview = link_preview_response.get_json()['preview']
+            self.assertEqual('0', link_preview['quality_link'])
+            self.assertEqual('0', link_preview['rows'][0]['values'][2])
+            quality_link_payload.update(expected_source_sha256=link_preview['source_sha256'],
+                                        expected_quality_id='99', expected_quality_link='1')
+            self.assertEqual(400, client.post('/api/gaia/batches/generate',
+                                              json=quality_link_payload).status_code)
+            quality_link_payload['expected_quality_link'] = '0'
+            link_generated = client.post('/api/gaia/batches/generate', json=quality_link_payload)
+            self.assertEqual(201, link_generated.status_code, link_generated.get_json())
+            self.assertEqual('0', link_generated.get_json()['batch']['summary']['quality_link'])
+            link_download = client.get(link_generated.get_json()['download_url'])
+            link_book = load_workbook(io.BytesIO(link_download.data),
+                                      read_only=True, data_only=True)
+            self.assertEqual('0', link_book.active.cell(2, 3).value)
+            link_book.close()
+            link_download.close()
+            self.assertEqual(400, client.post('/api/gaia/batches/preview', json={
+                **quality_link_payload, 'quality_link': '2'}).status_code)
             for label, code, wrong_id in [('99新', '99', '18972'), ('95新', '95', '18954'),
                                           ('9新', '90', '9'), ('准新机', '100', '0')]:
                 with self.subTest(label=label):
@@ -349,13 +376,22 @@ class GaiaListingApiTests(unittest.TestCase):
 
     def test_operator_models_batch_resolve_only_when_every_sku_is_unique(self):
         with tempfile.TemporaryDirectory() as root:
+            config_dir = Path(root) / "config"
+            config_dir.mkdir()
+            (config_dir / "gaia_quality_mapping.json").write_text(json.dumps({"qualities": [
+                {"label": "准新机", "dy_quality_id": "100"},
+                {"label": "99新", "dy_quality_id": "99"},
+            ]}), encoding="utf-8")
             app = Flask("gaia_model_batch_resolution")
             app.register_blueprint(create_gaia_blueprint(root))
             client = app.test_client()
             source = (
                 "品牌,型号,标品ID,品类\n"
                 "苹果,iPhone 17 Pro,sku-apple,手机\n"
+                "苹果,iPhone 16,72836188735489,手机\n"
                 "荣耀,Magic8 Pro,sku-honor,手机\n"
+                "Apple,iPhone 18 Pro Max,127745127356417,手机\n"
+                "Apple,iPhone 18 Pro Max,127745097993221,手机\n"
                 "甲牌,Common X,sku-a,手机\n"
                 "乙牌,Common X,sku-b,手机\n"
             ).encode("utf-8")
@@ -385,6 +421,58 @@ class GaiaListingApiTests(unittest.TestCase):
             self.assertFalse(data["all_unique"])
             self.assertEqual(2, data["results"][0]["candidate_count"])
             self.assertEqual([], data["selected_sku_ids"])
+
+            partial = client.post("/api/gaia/model-mappings/resolve-batch", json={
+                "mapping_version_id": mapping_id,
+                "allow_partial": True,
+                "models": [
+                    {"brand": "Apple", "model": "Apple iPhone 17 Pro"},
+                    {"brand": "", "model": "iPhone 18 Pro"},
+                    {"brand": "", "model": "Common X"},
+                ],
+            })
+            self.assertEqual(200, partial.status_code, partial.get_json())
+            partial_data = partial.get_json()
+            self.assertTrue(partial_data["partial"])
+            self.assertEqual(["sku-apple"], partial_data["selected_sku_ids"])
+            self.assertEqual(["not_found", "ambiguous"], [
+                item["reason"] for item in partial_data["skipped_models"]])
+
+            rejected_dir = Path(root) / "panel_data" / "gaia_listing" / "batches"
+            (rejected_dir / "abc123.json").write_text(json.dumps({
+                "id": "abc123", "state": "gaia_rejected", "mapping_version_id": mapping_id,
+                "gaia_receipt": {"submit_intent": True, "result": {
+                    "feedback": "第1行：标品ID[72836188735489]根据标品skuId未查询到类目信息失败"}},
+            }), encoding="utf-8")
+            quarantined = client.post("/api/gaia/model-mappings/resolve-batch", json={
+                "mapping_version_id": mapping_id, "allow_partial": True,
+                "models": [
+                    {"brand": "Apple", "model": "iPhone 16"},
+                    {"brand": "荣耀", "model": "Magic8 Pro"},
+                ],
+            })
+            self.assertEqual(["sku-honor"],
+                             quarantined.get_json()["selected_sku_ids"])
+            self.assertEqual("platform_rejected_sku",
+                             quarantined.get_json()["skipped_models"][0]["reason"])
+
+            (rejected_dir / "goods100.json").write_text(json.dumps({
+                "id": "goods100", "state": "gaia_rejected", "mapping_version_id": mapping_id,
+                "gaia_receipt": {"submit_intent": True, "result": {"feedback":
+                    "第11行：标品ID[127745127356417]和抖音成色ID[100]未找到对应的goodsId"}},
+            }), encoding="utf-8")
+            payload = {"mapping_version_id": mapping_id, "models": [
+                {"brand": "Apple", "model": "iPhone 18 Pro Max"}],
+                "quality_labels": ["准新机"], "allow_partial": True}
+            selected = client.post("/api/gaia/model-mappings/resolve-batch", json=payload)
+            self.assertEqual(200, selected.status_code, selected.get_json())
+            self.assertEqual(["127745127356417", "127745097993221"],
+                             selected.get_json()["selected_sku_ids"])
+            self.assertEqual([], selected.get_json()["results"][0]["excluded_sku_ids"])
+            other_grade = client.post("/api/gaia/model-mappings/resolve-batch", json={
+                **payload, "quality_labels": ["99新"]})
+            self.assertEqual(["127745127356417", "127745097993221"],
+                             other_grade.get_json()["selected_sku_ids"])
 
     def test_excel_discovery_falls_back_to_managed_template_when_downloads_unavailable(self):
         with tempfile.TemporaryDirectory() as root:
@@ -472,7 +560,9 @@ class GaiaListingApiTests(unittest.TestCase):
             self.assertEqual(original, template.read_bytes())
             batch = generated.get_json()["batch"]
             self.assertEqual("validation_passed", batch["state"])
-            self.assertEqual(2, batch["summary"]["generated_rows"])
+            self.assertEqual(1, batch["summary"]["generated_rows"])
+            split_ids = batch["summary"]["split_batch_ids"]
+            self.assertEqual(2, len(split_ids))
             download = client.get(generated.get_json()["download_url"])
             self.assertEqual(200, download.status_code, download.get_json())
             result = load_workbook(io.BytesIO(download.data), read_only=True, data_only=True)
@@ -480,10 +570,16 @@ class GaiaListingApiTests(unittest.TestCase):
             self.assertEqual("quality-99", result.active["E2"].value)
             self.assertEqual("D且E且G", result.active["G2"].value)
             self.assertEqual("a", result.active["H2"].value)
-            self.assertEqual("a", result.active["H3"].value)
-            self.assertIsNone(result.active["G3"].value)
+            self.assertIsNone(result.active["H3"].value)
             result.close()
             download.close()
+            second_download = client.get("/api/gaia/batches/%s/download" % split_ids[1])
+            self.assertEqual(200, second_download.status_code)
+            second_book = load_workbook(io.BytesIO(second_download.data), read_only=True, data_only=True)
+            self.assertEqual("a", second_book.active["H2"].value)
+            self.assertIsNone(second_book.active["G2"].value)
+            second_book.close()
+            second_download.close()
             preflight_url = "/api/gaia/batches/%s/handoff-preflight?shop_id=208501840" % batch["id"]
             handoff = client.get(preflight_url)
             self.assertEqual(200, handoff.status_code)

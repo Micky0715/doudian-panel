@@ -40,8 +40,20 @@ class OperatorErrorNotifierTests(unittest.TestCase):
         text = build_task_error_message(self.task, self.errors, self.config)
         self.assertIn("爱回收严选二手数码（7970406）", text)
         self.assertIn('<at user_id="ou_badc799d878fc1e3a55a8b0b197a91cc">金仲伟</at>', text)
-        self.assertIn("型号未匹配 ×1", text)
-        self.assertIn("小米 15（384）", text)
+        self.assertIn("小米 15：平台型号未唯一命中", text)
+        self.assertNotIn("API｜发布", text)
+
+    def test_material_error_is_short_actionable_chinese(self):
+        errors = [{
+            "name": "三星 W24 Flip 二手手机", "product_id": "384",
+            "error_type": "素材预检未通过",
+            "reason": "app.material_pipeline.domain.MaterialPolicyError: at least two white-background images are required",
+        }]
+        text = build_task_error_message(self.task, errors, self.config)
+        self.assertIn("三星 W24 Flip 二手手机：白底图不足 2 张，请补图后重试", text)
+        self.assertNotIn("MaterialPolicyError", text)
+        self.assertNotIn("white-background", text)
+        self.assertNotIn("任务：", text)
 
     def test_no_error_success_task_is_not_notified(self):
         self.assertFalse(should_notify(self.task, []))

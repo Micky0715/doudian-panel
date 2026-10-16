@@ -47,6 +47,7 @@ SHOP_ID = (os.environ.get("DP_SHOP_ID") or "").strip()
 MODE = os.environ.get("DP_MODE", "test")
 TEST_N = int(os.environ.get("DP_TEST_N", "1") or "1")
 PROFILE_DIR = os.environ.get("DP_PROFILE_DIR") or os.path.join(WORK_DIR, "chrome_user_data")
+STRICT_SHOP_PROFILE = os.environ.get("DP_STRICT_SHOP_PROFILE") == "1"
 PROCESSED_LOG = os.environ.get("DP_PROCESSED_LOG") or os.path.join(WORK_DIR, "processed_products.json")
 EXECUTION_PLAN_PATH = str(os.environ.get("DP_EXECUTION_PLAN") or "").strip()
 
@@ -695,8 +696,14 @@ def run_batch_with_stop(page, test_mode, test_n):
 
 def main():
     from playwright.sync_api import sync_playwright
+    from integrations.doudian.browser_profiles import has_browser_login
 
     test_mode = (MODE == "test")
+    if STRICT_SHOP_PROFILE and not has_browser_login(PROFILE_DIR):
+        log("INIT", "❌ 店铺 %s 的独立浏览器资料尚未登录" % SHOP_ID)
+        emit_state("error", "该店铺浏览器尚未登录；请在执行电脑运行 python3 -m "
+                   "scripts.doudian_browser_login_window --shop-id %s --purpose listing" % SHOP_ID)
+        return
     os.makedirs(PROFILE_DIR, exist_ok=True)
 
     log("INIT", "任务 %s 启动 | 模式: %s | 店铺ID: %s"
@@ -737,7 +744,7 @@ def main():
             # ========== 登录后店铺一致性核对 ==========
             # 已登录店铺(页面检测) 与 所选上架店铺(SHOP_ID) 对比：
             #   一致  → 不切换店铺，核对名字+ID无误后直接进入草稿箱
-            #   不一致 → 自动切换，切换后再次核对
+            #   面板店铺专用资料不一致 → 停止；独立脚本的旧模式才允许切换
             #   未指定 SHOP_ID → 仅核对当前店铺身份，不切换
             # 复用 test_doudian_batch 的 _verify_shop_identity 做名字<->ID 自洽核对
             if SHOP_ID:
@@ -757,9 +764,18 @@ def main():
                         log("SHOP", "✓ 已登录店铺与目标一致（%s ID:%s），无需切换，"
                                     "核对名字/ID无误，直接进入草稿箱" % (cur_name, cur_id))
                     else:
+                        if STRICT_SHOP_PROFILE:
+                            log("SHOP", "❌ 店铺专用浏览器身份核对未通过: %s" % msg)
+                            emit_state("error", "店铺专用浏览器身份无法确认，请重新登录目标店铺")
+                            return
                         log("SHOP", "⚠ 店铺身份核对未通过: %s，仍不切换（后续或受影响）" % msg)
                     emit({"t": "shop", "name": cur_name, "id": cur_id})
                 else:
+                    if STRICT_SHOP_PROFILE:
+                        log("SHOP", "❌ 店铺专用浏览器当前短 ID 为 %s，目标为 %s；禁止自动切店"
+                            % (cur_id or "未识别", SHOP_ID))
+                        emit_state("error", "店铺专用浏览器未登录目标店铺，请先在该店专用窗口登录")
+                        return
                     # 不一致 → 切换，切换后重新检测并核对
                     shop_name = ""
                     for name, sid in dd.SHOP_MAPPING.items():
@@ -813,6 +829,10 @@ def main():
             # 检测当前店铺
             try:
                 info = dd.detect_shop_info(page)
+                if STRICT_SHOP_PROFILE and not (info and info.get("shop_name") and info.get("shop_id")):
+                    log("SHOP", "❌ 店铺专用浏览器未能读到当前店铺名称和短 ID")
+                    emit_state("error", "店铺专用浏览器身份无法回读，拒绝继续")
+                    return
                 if info and info.get("shop_name"):
                     emit({"t": "shop", "name": info.get("shop_name", ""),
                           "id": info.get("shop_id", "")})
@@ -841,6 +861,9 @@ def main():
                         log("SHOP", "⚠ 未识别到图片目录，使用默认: %s" % dd.IMAGE_BASE_DIR)
             except Exception as e:
                 log("SHOP", "⚠ 店铺检测失败: %s" % e)
+                if STRICT_SHOP_PROFILE:
+                    emit_state("error", "店铺专用浏览器身份无法回读，拒绝继续")
+                    return
 
             if should_stop():
                 log("BATCH", "⚠ 任务开始前收到停止信号，退出")

@@ -17,16 +17,50 @@ from app.gaia_listing.application.price_uplift import PriceUpliftError
 from .upload_form import GAIA_SHOP_NAMES
 
 
+class ChannelProductNotConfirmedError(PriceUpliftError):
+    """No exact new product yet; only this outcome may be polled again."""
+
+    def __init__(self, message: str, diagnostics: dict):
+        super().__init__(message)
+        self.diagnostics = diagnostics
+
+
 def _key(value: str) -> str:
     value = unicodedata.normalize("NFKC", str(value or "")).casefold()
     return re.sub(r"[\s·・/（）()\-—_]+", "", value)
+
+
+def _model_search_queries(model: str) -> list[str]:
+    """Search spelling variants verified in Gaia; association stays exact."""
+    model = str(model).strip()
+    spellings = [model]
+    # Gaia has rendered "三星 Galaxy S21 (5G版)" as "三星Galaxy S21 5G".
+    # This is a spelling variant, not permission to drop the 5G qualifier.
+    five_g = re.sub(r"[（(]\s*5\s*G\s*版\s*[)）]", "5G", model, flags=re.I)
+    if five_g != model:
+        spellings.append(five_g)
+    queries = []
+    for spelling in spellings:
+        cjk_joined = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[A-Za-z0-9])", "", spelling)
+        latin_digit_joined = re.sub(r"(?<=[A-Za-z])\s+(?=\d)", "", spelling)
+        both_joined = re.sub(r"(?<=[A-Za-z])\s+(?=\d)", "", cjk_joined)
+        bases = (spelling, cjk_joined, latin_digit_joined, both_joined)
+        queries.extend(bases)
+        queries.extend(re.sub(r"(?<=\d)\s+(?=[A-Za-z])", "", query) for query in bases)
+        queries.append(re.sub(r"\s+", "", spelling))
+    return list(dict.fromkeys(queries))
 
 
 def _title_matches(title: str, brand: str, model: str) -> bool:
     aliases = {"apple": "苹果", "samsung": "三星", "xiaomi": "小米", "honor": "荣耀"}
     brand_key = _key(brand)
     prefixes = {"", brand_key, _key(aliases.get(brand_key, ""))}
-    expected = {_key(f"{prefix}{model}二手手机") for prefix in prefixes}
+    spellings = [model]
+    five_g = re.sub(r"[（(]\s*5\s*G\s*版\s*[)）]", "5G", model, flags=re.I)
+    if five_g != model:
+        spellings.append(five_g)
+    expected = {_key(f"{prefix}{spelling}二手手机")
+                for prefix in prefixes for spelling in spellings}
     return _key(title) in expected
 
 
@@ -80,6 +114,80 @@ def _matching_search_response(response, shop_id: str, model: str) -> bool:
     return (body.get("shopIds") == [str(shop_id)]
             and body.get("channelSpuName") == model
             and body.get("pageNo") == 1)
+
+
+def _channel_search_request(request) -> dict | None:
+    """Describe only the search parameters needed for diagnostics, never the URL."""
+    parts = urlsplit(request.url)
+    if request.method != "GET" or parts.path != "/api":
+        return None
+    params = parse_qs(parts.query)
+    if params.get("apiName") != ["pop.erp.goods.product.spu.query.product.list"]:
+        return None
+    try:
+        body = json.loads(params["body"][0])
+    except (KeyError, ValueError, TypeError, IndexError):
+        return {"invalid_body": True}
+    if not isinstance(body, dict):
+        return {"invalid_body": True}
+    return {key: body.get(key) for key in ("shopIds", "channelSpuName", "pageNo")}
+
+
+def _search_failure_detail(requests: list[dict], responses: list[tuple[dict, int]],
+                           failures: list[tuple[dict, str]], shop_id: str, model: str) -> str:
+    if not requests:
+        return "点击搜索后未发出盖亚渠道商品查询请求（可能是页面未响应或搜索按钮未生效）"
+    expected = {"shopIds": [str(shop_id)], "channelSpuName": model, "pageNo": 1}
+    if expected not in requests:
+        actual = requests[-1]
+        if actual.get("invalid_body"):
+            return "盖亚渠道商品查询请求体不是有效 JSON，页面接口格式可能已变化"
+        differences = ", ".join(key for key in expected if actual.get(key) != expected[key])
+        return "盖亚渠道商品查询参数与目标不一致（%s），未提交上传" % differences
+    matching_failures = [reason for details, reason in failures if details == expected]
+    if matching_failures:
+        return "盖亚渠道商品查询请求失败：" + matching_failures[-1][:160]
+    matching_responses = [status for details, status in responses if details == expected]
+    if matching_responses:
+        return "盖亚渠道商品查询已返回，但自动化未识别到对应响应（HTTP %s）" % matching_responses[-1]
+    return "盖亚渠道商品查询请求已发出，但 25 秒内未返回响应"
+
+
+def _search_response_total(response) -> int:
+    """Validate the exact scoped search response, without trusting stale UI."""
+    if response.status >= 400:
+        raise PriceUpliftError("盖亚渠道商品查询接口返回 HTTP %s" % response.status)
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise PriceUpliftError("盖亚渠道商品查询响应不是有效 JSON") from exc
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if (not isinstance(data, dict) or not isinstance(data.get("totalCount"), int)
+            or payload.get("code") != 200):
+        code = payload.get("code") if isinstance(payload, dict) else "无"
+        raise PriceUpliftError("盖亚渠道商品查询接口结果无效（业务码 %s）" % code)
+    total = data["totalCount"]
+    if total < 0 or total > 400:
+        raise PriceUpliftError("同店同型号结果超过 400 条或计数无效，拒绝不完整关联")
+    return total
+
+
+def _retry_stale_search(page, search, shop_id: str, model: str) -> tuple[list[dict], int]:
+    """One extra read-only search after an exact response loses the UI race."""
+    page.wait_for_timeout(500)
+    try:
+        with page.expect_response(
+            lambda response: _matching_search_response(response, shop_id, model),
+            timeout=25000,
+        ) as received:
+            search.click(timeout=8000)
+    except Exception as exc:
+        raise PriceUpliftError("盖亚渠道商品页面未能重发精确店铺和型号查询") from exc
+    total = _search_response_total(received.value)
+    try:
+        return _wait_for_search_rows(page, shop_id, model, total)
+    except PriceUpliftError as exc:
+        raise PriceUpliftError("盖亚渠道商品页面重查后仍未刷新；未提交上传：" + str(exc)) from exc
 
 
 def _wait_for_search_rows(page, shop_id: str, model: str, expected_total: int,
@@ -185,8 +293,72 @@ def _select_exact_shop_filter(page, shop_id: str, shop_name: str) -> None:
         raise PriceUpliftError("盖亚渠道商品店铺筛选回读不一致")
 
 
+def _search_channel_model(page, shop_id: str, name_input, search, query: str) -> list[dict]:
+    """Read all pages for one exact-shop search phrase."""
+    name_input.fill(query)
+    requests, responses, failures = [], [], []
+
+    def on_request(request):
+        description = _channel_search_request(request)
+        if description is not None:
+            requests.append(description)
+
+    def on_response(response):
+        description = _channel_search_request(response.request)
+        if description is not None:
+            responses.append((description, response.status))
+
+    def on_request_failed(request):
+        description = _channel_search_request(request)
+        if description is not None:
+            failures.append((description, str(request.failure or "网络请求失败")))
+
+    page.on("request", on_request)
+    page.on("response", on_response)
+    page.on("requestfailed", on_request_failed)
+    try:
+        with page.expect_response(
+            lambda response: _matching_search_response(response, str(shop_id), query),
+            timeout=25000,
+        ) as received:
+            search.click(timeout=8000)
+        expected_total = _search_response_total(received.value)
+    except PriceUpliftError:
+        raise
+    except Exception as exc:
+        raise PriceUpliftError(_search_failure_detail(
+            requests, responses, failures, str(shop_id), query)) from exc
+    finally:
+        page.remove_listener("request", on_request)
+        page.remove_listener("response", on_response)
+        page.remove_listener("requestfailed", on_request_failed)
+    try:
+        items, total = _wait_for_search_rows(page, str(shop_id), query, expected_total)
+    except PriceUpliftError as exc:
+        if "页面总数" not in str(exc) and "页面尚未呈现本次查询的空结果" not in str(exc):
+            raise
+        items, total = _retry_stale_search(page, search, str(shop_id), query)
+    if not total:
+        return []
+    if total and not items:
+        raise PriceUpliftError("盖亚渠道商品第一页为空，拒绝关联")
+    page_size = len(items)
+    while len(items) < total:
+        next_button = page.locator(".ant-pagination-next button").filter(visible=True)
+        if next_button.count() != 1 or next_button.is_disabled():
+            raise PriceUpliftError("盖亚渠道商品分页未完整读取")
+        next_button.click(timeout=8000)
+        items.extend(_wait_for_fresh_page_rows(
+            page, str(shop_id), {item["product_id"] for item in items},
+            min(page_size, total - len(items)),
+        ))
+    if len(items) != total or len({item["product_id"] for item in items}) != total:
+        raise PriceUpliftError("盖亚渠道商品结果数或商品 ID 重复")
+    return items
+
+
 def snapshot_channel_products(page, shop_id: str, expected_products: list[dict]) -> dict:
-    """Capture complete exact-shop/model searches; fail if paging is incomplete."""
+    """Capture all safe spelling variants, then verify exact titles after submit."""
     if not expected_products or not re.fullmatch(r"\d+", str(shop_id)):
         raise PriceUpliftError("缺少本批商品型号或目标店铺")
     name_input = page.locator("#advanced_search_channelSpuName")
@@ -202,53 +374,25 @@ def snapshot_channel_products(page, shop_id: str, expected_products: list[dict])
         brand, model = str(product.get("brand") or ""), str(product.get("model") or "")
         if not brand or not model:
             raise PriceUpliftError("本批商品缺少品牌或型号")
-        name_input.fill(model)
-        try:
-            with page.expect_response(
-                lambda response: _matching_search_response(response, str(shop_id), model),
-                timeout=15000,
-            ) as received:
-                search.click(timeout=8000)
-            if received.value.status >= 400:
-                raise PriceUpliftError("盖亚渠道商品查询接口返回错误")
-            payload = received.value.json()
-            data = payload.get("data") if isinstance(payload, dict) else None
-            if (not isinstance(data, dict) or not isinstance(data.get("totalCount"), int)
-                    or payload.get("code") != 200):
-                raise PriceUpliftError("盖亚渠道商品查询接口结果无效")
-            expected_total = data["totalCount"]
-            if expected_total > 400:
-                raise PriceUpliftError("同店同型号结果超过 400 条，拒绝不完整关联")
-        except PriceUpliftError:
-            raise
-        except Exception as exc:
-            raise PriceUpliftError("盖亚渠道商品查询未取得接口响应") from exc
-        items, total = _wait_for_search_rows(page, str(shop_id), model, expected_total)
-        if not total:
-            result[_key(brand + model)] = {"brand": brand, "model": model, "items": []}
-            continue
-        if total and not items:
-            raise PriceUpliftError("盖亚渠道商品第一页为空，拒绝关联")
-        page_size = len(items)
-        while len(items) < total:
-            next_button = page.locator(".ant-pagination-next button").filter(visible=True)
-            if next_button.count() != 1 or next_button.is_disabled():
-                raise PriceUpliftError("盖亚渠道商品分页未完整读取")
-            next_button.click(timeout=8000)
-            items.extend(_wait_for_fresh_page_rows(
-                page, str(shop_id), {item["product_id"] for item in items},
-                min(page_size, total - len(items)),
-            ))
-        if len(items) != total or len({item["product_id"] for item in items}) != total:
-            raise PriceUpliftError("盖亚渠道商品结果数或商品 ID 重复")
-        result[_key(brand + model)] = {"brand": brand, "model": model, "items": items}
+        merged = {}
+        for query in _model_search_queries(model):
+            for item in _search_channel_model(page, str(shop_id), name_input, search, query):
+                product_id = item["product_id"]
+                if product_id in merged and merged[product_id] != item:
+                    raise PriceUpliftError("盖亚渠道商品多次查询结果不一致，拒绝关联")
+                merged[product_id] = item
+        result[_key(brand + model)] = {"brand": brand, "model": model,
+                                       "items": list(merged.values())}
     return result
 
 
 def reconcile_channel_products(before: dict, after: dict, *, shop_id: str,
                                expected_products: list[dict], submitted_at: datetime,
-                               observed_at: datetime) -> list[str]:
+                               observed_at: datetime, scene: int = 2) -> list[str]:
     """Accept only one newly appeared, exact-title, same-shop product/model."""
+    if scene not in {1, 2}:
+        raise PriceUpliftError("商品场域无效")
+    scene_name = {1: "直播间", 2: "直播货架"}[scene]
     ids = []
     if not before or not after or observed_at < submitted_at:
         raise PriceUpliftError("商品创建前后快照不完整或时间顺序错误")
@@ -261,20 +405,53 @@ def reconcile_channel_products(before: dict, after: dict, *, shop_id: str,
             raise PriceUpliftError(f"{brand} {model} 缺少完整的前后商品快照")
         old_ids = {item["product_id"] for item in old}
         candidates = []
+        excluded = {}
+        new_count = 0
         for item in fresh:
             if item["product_id"] in old_ids:
                 continue
+            new_count += 1
             try:
                 created = datetime.strptime(item["created_at"], "%Y-%m-%d %H:%M:%S")
             except ValueError as exc:
                 raise PriceUpliftError("新商品创建时间无法回读") from exc
             if not (submitted_at - timedelta(seconds=30) <= created <= observed_at + timedelta(seconds=30)):
+                excluded["created_at"] = excluded.get("created_at", 0) + 1
                 continue
-            if (item["shop_id"] == str(shop_id) and item["scene"] == "直播货架"
-                    and item["status"] == "待上架" and item["strategy"] == "D且E且G"
-                    and item["quality_dimension"] == "二维成色"
-                    and _title_matches(item["title"], brand, model)):
-                candidates.append(item["product_id"])
+            checks = {
+                "shop_id": item["shop_id"] == str(shop_id),
+                "scene": item["scene"] == scene_name,
+                "status": item["status"] == "待上架",
+                "strategy": item["strategy"] == "D且E且G",
+                "quality_dimension": item["quality_dimension"] == "二维成色",
+                "title": _title_matches(item["title"], brand, model),
+            }
+            failed = [name for name, ok in checks.items() if not ok]
+            if failed:
+                for name in failed:
+                    excluded[name] = excluded.get(name, 0) + 1
+                continue
+            candidates.append(item["product_id"])
+        diagnostics = {
+            "brand": brand, "model": model,
+            "visible_count": len(fresh), "baseline_count": len(old),
+            "new_id_count": new_count, "matched_count": len(candidates),
+            "excluded": excluded,
+        }
+        if not candidates:
+            labels = {"created_at": "创建时间不符", "shop_id": "店铺不符",
+                      "scene": "场域不符", "status": "状态不符",
+                      "strategy": "策略不符", "quality_dimension": "成色维度不符",
+                      "title": "标题不符"}
+            excluded_text = "、".join(
+                f"{labels[name]} {count} 个" for name, count in excluded.items()
+            ) or "未发现新增记录"
+            explanation = ("盖亚已受理，但目标店铺渠道商品列表未查到本次新商品"
+                           if new_count == 0 else "盖亚已受理，发现新商品但未通过本批核对")
+            raise ChannelProductNotConfirmedError(
+                f"{brand} {model} {explanation}（符合条件 0 个）；"
+                f"当前查询 {len(fresh)} 个、相对提交前新增 {new_count} 个，"
+                f"筛除原因：{excluded_text}；请核对盖亚创建优品结果数据，禁止重复导入", diagnostics)
         if len(candidates) != 1:
             raise PriceUpliftError(f"{brand} {model} 本次新增商品不能唯一确认（{len(candidates)} 个）")
         ids.append(candidates[0])

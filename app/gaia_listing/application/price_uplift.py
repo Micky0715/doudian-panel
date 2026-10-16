@@ -26,14 +26,16 @@ PRICE_RULE_NAMES = {
 }
 
 
-def rule_name_matches_shop_term(name: str, shop_id: str, installments: int) -> bool:
-    """Require one bracketed shop ID and term, excluding livestream-room rules."""
-    if str(installments) not in {"12", "24"}:
+def rule_name_matches_shop_term(name: str, shop_id: str, installments: int,
+                                scene: int = 2) -> bool:
+    """Require an exact shop ID, term and scene, independent of shop label."""
+    if str(installments) not in {"6", "12", "24"} or scene not in {1, 2}:
         return False
     text = str(name or "").strip()
     ids = re.findall(r"【\s*([0-9]+)\s*】", text)
-    term = re.search(r"(?:】|[-—–－])\s*(12|24)\s*期\s*$", text)
-    return ("直播间" not in text and len(ids) == 1 and ids[0] == str(shop_id)
+    term = re.search(r"(?:】|[-—–－])\s*(6|12|24)\s*期\s*$", text)
+    room = "直播间" in text
+    return (room == (scene == 1) and len(ids) == 1 and ids[0] == str(shop_id)
             and bool(term) and term.group(1) == str(installments))
 
 # Exact enabled rates read back from the current Gaia rule list.
@@ -51,13 +53,12 @@ def prepare_price_uplift(batch: dict, *, shop_id: str, installments: int) -> dic
     """
     if str(shop_id) != str(batch.get("shop_id")):
         raise PriceUpliftError("盖亚批次与价格规则目标店铺不一致")
-    if str(installments) not in {"12", "24"}:
-        raise PriceUpliftError("分期数只能选择 12 期或 24 期")
-    if batch.get("scene") != 2:
-        raise PriceUpliftError("价格上浮规则仅关联直播货架场域的盖亚批次")
-    rule_name = PRICE_RULE_NAMES.get(str(shop_id), {}).get(int(installments))
-    if not rule_name:
-        raise PriceUpliftError("该店铺尚无经核实的 12/24 期价格上浮规则对应关系")
+    if str(installments) not in {"6", "12", "24"}:
+        raise PriceUpliftError("分期数只能选择 6、12 或 24 期")
+    if batch.get("scene") not in {1, 2}:
+        raise PriceUpliftError("盖亚批次场域无效")
+    if str(shop_id) not in PRICE_RULE_NAMES:
+        raise PriceUpliftError("店铺 ID 不在已授权店铺清单中")
     if batch.get("state") not in {"doudian_drafts_matched", "handed_off"}:
         raise PriceUpliftError("盖亚受理不等于商品创建成功；请先完成逐行抖店商品 ID 关联")
     ids = batch.get("doudian_draft_ids")

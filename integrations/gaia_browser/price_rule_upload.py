@@ -140,10 +140,12 @@ def _read_rule_product_ids(detail, rule_name: str, expected_ids: set[str]) -> di
 
 def upload_price_rule(*, profile_dir: str, shop_id: str, installments: int,
                       workbook_path: str, artifact_dir: str, before_submit,
-                      expected_product_ids: list[str] | None = None) -> dict:
+                      expected_product_ids: list[str] | None = None, scene: int = 2,
+                      expected_rule_name: str | None = None,
+                      expected_rate_text: str | None = None) -> dict:
     """One-click submission. The caller persists intent before the final click."""
-    if int(installments) not in PRICE_RULE_NAMES.get(str(shop_id), {}):
-        raise PriceUpliftError("店铺与期数没有经过核实的价格上浮规则")
+    if str(shop_id) not in PRICE_RULE_NAMES or int(installments) not in {6, 12, 24} or scene not in {1, 2}:
+        raise PriceUpliftError("店铺、期数或场域不在允许范围")
     workbook = Path(workbook_path).resolve()
     if workbook.suffix.lower() != ".xlsx" or not workbook.is_file() or workbook.stat().st_size <= 0:
         raise PriceUpliftError("价格上浮导入文件不存在")
@@ -160,8 +162,11 @@ def upload_price_rule(*, profile_dir: str, shop_id: str, installments: int,
             page.goto(RULES_URL, wait_until="domcontentloaded", timeout=30000)
             page.get_by_text("价格上浮", exact=True).first.wait_for(state="visible", timeout=15000)
             page.locator("table tbody tr").filter(visible=True).first.wait_for(state="visible", timeout=15000)
-            matched, cells = locate_price_rule(page, shop_id, installments)
+            matched, cells = locate_price_rule(page, shop_id, installments, scene)
             rule_name = cells[0]
+            if ((expected_rule_name and rule_name != expected_rule_name)
+                    or (expected_rate_text and cells[2] != expected_rate_text)):
+                raise PriceUpliftError("价格规则名称或上浮比例在预检后发生变化")
             edit = matched.get_by_role("button", name="编辑", exact=True)
             if edit.count() != 1:
                 raise PriceUpliftError("规则编辑按钮不唯一")

@@ -135,27 +135,69 @@ def resolve_standard_sku(records: Iterable[ModelMappingRecord], standard_sku_id:
     return ModelResolution("standard_sku_id" if matches else "unresolved", matches)
 
 
-def resolve_operator_models(records: Iterable[ModelMappingRecord], rows: list) -> dict:
-    """Expand only the explicitly requested, unambiguous phone models."""
+def resolve_operator_models(records: Iterable[ModelMappingRecord], rows: list,
+                            *, allow_partial: bool = False,
+                            rejected_skus=None) -> dict:
+    """Expand explicit, unambiguous models; optionally keep valid rows in a partial batch."""
     if not isinstance(rows, list) or not rows or len(rows) > 2000:
         raise ValueError("请填写 1～2000 个手机型号")
+    if not isinstance(allow_partial, bool):
+        raise ValueError("部分匹配开关格式无效")
+    rejected_skus = rejected_skus or {}
     phones = tuple(item for item in records if item.category.strip() == "手机")
-    results, sku_ids = [], []
+    results, sku_ids, skipped, excluded = [], [], [], []
     for index, row in enumerate(rows, start=1):
         if not isinstance(row, dict) or not str(row.get("model") or "").strip():
             raise ValueError("第 %s 行缺少手机型号" % index)
         brand, model = (str(row.get(key) or "").strip() for key in ("brand", "model"))
         result = (resolve_model_records(phones, brand=brand, model=model) if brand else
                   resolve_model_records_any_brand(phones, model=model))
+        # Rejected variants must never turn an ambiguous cross-model match into
+        # an apparently unique one.
+        excluded_for_row = ([item.standard_sku_id for item in result.records
+                             if item.standard_sku_id in rejected_skus]
+                            if result.as_dict()["unique_model"] else [])
+        if excluded_for_row:
+            excluded.extend({"index": index, "standard_sku_id": sku_id,
+                             "rejected_batch_id": rejected_skus[sku_id]}
+                            for sku_id in excluded_for_row)
+            result = ModelResolution(result.strategy, tuple(
+                item for item in result.records if item.standard_sku_id not in rejected_skus))
         payload = result.as_dict()
         payload.update(index=index, brand_input=brand, model_input=model)
+        payload["excluded_sku_ids"] = excluded_for_row
         results.append(payload)
         if payload["unique_model"]:
             sku_ids.extend(item.standard_sku_id for item in result.records)
+        else:
+            skipped.append({
+                "index": index, "brand": brand, "model": model,
+                "reason": ("ambiguous" if payload["candidate_count"] else
+                           "platform_rejected_sku" if excluded_for_row else "not_found"),
+                "candidate_count": payload["candidate_count"],
+            })
     deduplicated = list(dict.fromkeys(sku_ids))
-    ready = all(item["unique_model"] for item in results) and len(deduplicated) <= 2000
+    matched_count = len(results) - len(skipped)
+    within_limit = len(deduplicated) <= 2000
+    ready = matched_count > 0 and within_limit and (allow_partial or not skipped)
+    if not within_limit:
+        message = "匹配超过 2000 个标品 ID，请分批填写型号"
+    elif ready and skipped:
+        message = ("已匹配 %s 个型号，跳过 %s 个未找到或有歧义的型号；"
+                   "本批仅填写 %s 个国行标品 ID" % (matched_count, len(skipped), len(deduplicated)))
+    elif ready:
+        message = "已匹配全部型号，去重后共 %s 个国行标品 ID" % len(deduplicated)
+    else:
+        message = "没有可安全处理的型号" if not matched_count else "存在未找到或跨品牌/型号歧义，请核对标出的型号"
+    if excluded:
+        message += "；已排除 %s 个盖亚曾明确拒绝的标品 ID" % len({item["standard_sku_id"] for item in excluded})
     return {
         "success": ready,
+        "partial": bool(ready and skipped),
+        "matched_model_count": matched_count,
+        "skipped_model_count": len(skipped),
+        "skipped_models": skipped,
+        "excluded_skus": excluded,
         "all_unique": all(item["unique_sku"] for item in results),
         "all_models_resolved": all(item["unique_model"] for item in results),
         "duplicate_skus": len(sku_ids) != len(deduplicated),
@@ -163,7 +205,5 @@ def resolve_operator_models(records: Iterable[ModelMappingRecord], rows: list) -
         "selected_sku_ids": deduplicated if ready else [],
         "selected_sku_count": len(deduplicated) if ready else 0,
         "results": results,
-        "message": ("已匹配全部型号，去重后共 %s 个国行标品 ID" % len(deduplicated) if ready else
-                    "匹配超过 2000 个标品 ID，请分批填写型号" if len(deduplicated) > 2000 else
-                    "存在未找到或跨品牌/型号歧义，请核对标出的型号"),
+        "message": message,
     }

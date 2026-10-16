@@ -34,6 +34,9 @@ TEST_CASES = [
     # Redmi 分支同样应识别简写成色
     ("95新 Redmi/红米 【95】Redmi Note 12 Turbo 二手手机", "95新"),
     ("99新 Redmi/红米 【99】Redmi K70 二手手机", "99新"),
+    ("准新品 Apple/苹果 iPhone 17 Pro 二手手机", "准新品"),
+    ("Apple/苹果 【准新品】iPhone 17 Pro 二手手机", "准新品"),
+    ("--准新品-- Apple/苹果 iPhone 17 Pro 二手手机", "准新品"),
     # 不相关方括号不应误识别
     ("Huawei/华为 华为 Mate X7 典藏版 二手手机", ""),
 ]

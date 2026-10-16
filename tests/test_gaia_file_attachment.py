@@ -1,7 +1,10 @@
 """Offline regression for Gaia upload widgets that clear the native file input."""
 
 import copy
+import hashlib
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from playwright.sync_api import sync_playwright
@@ -10,7 +13,8 @@ from integrations.gaia_browser.file_attachment import (
     FileAttachmentError, assess_attachment, wait_for_attachment,
 )
 from integrations.gaia_browser.submit import submit_gaia_batch
-from integrations.gaia_browser.upload_form import _scroll_shop_dropdown
+from integrations.gaia_browser.channel_reconcile import ChannelProductNotConfirmedError
+from integrations.gaia_browser.upload_form import _scroll_shop_dropdown, _upload_payload
 from integrations.gaia_browser.upload_preflight import preflight_gaia_upload
 
 
@@ -47,6 +51,17 @@ class FakeDialog:
 
 
 class GaiaFileAttachmentTests(unittest.TestCase):
+    def test_batch_scoped_upload_file_has_exact_hash_and_unique_name(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'gaia_upload.xlsx'
+            content = b'checked workbook bytes'
+            path.write_bytes(content)
+            payload = _upload_payload(path, 'abc123', hashlib.sha256(content).hexdigest())
+            self.assertEqual('gaia_abc123.xlsx', payload['name'])
+            self.assertEqual(content, payload['buffer'])
+            with self.assertRaisesRegex(RuntimeError, '哈希发生变化'):
+                _upload_payload(path, 'abc123', '0' * 64)
+
     def test_shop_virtual_list_scrolls_even_with_hidden_overflow(self):
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
@@ -153,7 +168,8 @@ class GaiaFileAttachmentTests(unittest.TestCase):
 
 class GaiaFinalConfirmTests(unittest.TestCase):
     def run_submission(self, *, data=None, quantity="1", shop_count=1, enabled=True, verify=None,
-                       feedback="提交成功", check_cancelled=None):
+                       feedback="提交成功", check_cancelled=None, expected_products=None,
+                       generated_rows=None):
         dialog = FakeDialog([data or snapshot()])
         dialog.quantity, dialog.shop_matches = quantity, shop_count
         confirm = Mock(is_enabled=Mock(return_value=enabled))
@@ -164,9 +180,12 @@ class GaiaFinalConfirmTests(unittest.TestCase):
         page = Mock()
         page.locator.return_value.filter.return_value = messages
         result = {"shop_name": "拍拍严选二手手机", "output_name": NAME, "output_size": SIZE,
-                  "attachment_readback": {"source": "upload_list"}, "submitted": False}
+                  "attachment_readback": {"source": "upload_list"}, "submitted": False,
+                  "generated_rows": generated_rows}
         self.result = result
         def form(**kwargs):
+            if expected_products is not None:
+                result["before_channel_snapshot"] = kwargs["before_create"](page, {"scene": 2})
             return kwargs["on_ready"](page, dialog, confirm, result)
         with patch("integrations.gaia_browser.submit.with_gaia_upload_form", side_effect=form), \
                 patch("integrations.gaia_browser.submit._screenshot", return_value="test.png"), \
@@ -175,7 +194,59 @@ class GaiaFinalConfirmTests(unittest.TestCase):
             return submit_gaia_batch(work_dir="unused", batch_id="abc", shop_id="5576543",
                                      profile_dir="unused", artifact_dir="unused",
                                      verify_handoff=verify or Mock(), before_submit=self.before,
-                                     check_cancelled=check_cancelled)
+                                     check_cancelled=check_cancelled,
+                                     expected_products=expected_products)
+
+    def test_full_payment_also_requires_new_product_readback(self):
+        products = [{"brand": "苹果", "model": "iPhone 17 Pro"}]
+        with patch("integrations.gaia_browser.submit.snapshot_channel_products",
+                   side_effect=[{"before": {"items": []}}, {"after": {"items": []}}]) as snapshot, \
+             patch("integrations.gaia_browser.submit.reconcile_channel_products",
+                   return_value=["3847298731712053572"]) as reconcile:
+            result = self.run_submission(expected_products=products)
+        self.assertEqual(2, snapshot.call_count)
+        reconcile.assert_called_once()
+        self.assertEqual("verified", result["product_reconcile_status"])
+        self.assertEqual(["3847298731712053572"], result["verified_product_ids"])
+        self.assertEqual({"before": []}, result["baseline_product_ids"])
+        self.assertEqual(1, result["readback_attempts"])
+        self.assertNotIn("before_channel_snapshot", result)
+
+    def test_zero_match_is_rechecked_without_reupload(self):
+        products = [{"brand": "苹果", "model": "iPhone 14"}]
+        empty = {"model": {"items": []}}
+        pending = ChannelProductNotConfirmedError(
+            "苹果 iPhone 14 本次新增商品不能唯一确认（0 个）",
+            {"new_id_count": 0, "excluded": {}},
+        )
+        with patch("integrations.gaia_browser.submit.snapshot_channel_products",
+                   side_effect=[empty, empty, empty]), \
+             patch("integrations.gaia_browser.submit.reconcile_channel_products",
+                   side_effect=[pending, ["3847298731712053572"]]) as reconcile:
+            result = self.run_submission(expected_products=products)
+        self.assertEqual("verified", result["product_reconcile_status"])
+        self.assertEqual(2, result["readback_attempts"])
+        self.assertEqual(2, reconcile.call_count)
+        self.confirm.click.assert_called_once()
+
+    def test_zero_match_timeout_records_evidence_and_never_reuploads(self):
+        products = [{"brand": "苹果", "model": "iPhone 14"}]
+        empty = {"model": {"items": []}}
+        pending = ChannelProductNotConfirmedError(
+            "苹果 iPhone 14 本次新增商品不能唯一确认（0 个）",
+            {"new_id_count": 0, "excluded": {}},
+        )
+        with patch("integrations.gaia_browser.submit.snapshot_channel_products",
+                   side_effect=[empty, empty]), \
+             patch("integrations.gaia_browser.submit.reconcile_channel_products",
+                   side_effect=pending), \
+             patch("integrations.gaia_browser.submit.PRODUCT_READBACK_WAIT_SECONDS", 0):
+            result = self.run_submission(expected_products=products)
+        self.assertEqual("blocked", result["product_reconcile_status"])
+        self.assertEqual({"new_id_count": 0, "excluded": {}}, result["readback_diagnostics"])
+        self.assertIn("禁止重复导入", result["product_reconcile_error"])
+        self.assertEqual(1, result["readback_attempts"])
+        self.confirm.click.assert_called_once()
 
     def test_goods_id_toast_is_retained_and_classified_as_rejected_without_retry(self):
         for text in ['没有对应的goodsId', '未找到对应 GoodsID', 'goodsId不存在']:
@@ -184,6 +255,35 @@ class GaiaFinalConfirmTests(unittest.TestCase):
             self.assertEqual(text, result['feedback'])
             self.assertEqual([text], result['observed_feedback'])
             self.confirm.click.assert_called_once()
+
+    def test_row_limit_toast_is_explicit_rejection_not_unknown(self):
+        result = self.run_submission(feedback='上传文件行数不能超过500')
+        self.assertEqual('rejected', result['outcome'])
+        self.assertEqual('上传文件行数不能超过500', result['feedback'])
+        self.confirm.click.assert_called_once()
+
+    def test_row_limit_toast_on_small_batch_is_effective_goods_rejection(self):
+        result = self.run_submission(feedback='上传文件行数不能超过500', generated_rows=121)
+        self.assertEqual('rejected', result['outcome'])
+        self.assertTrue(result['effective_goods_limit_rejected'])
+        self.assertEqual('上传文件行数不能超过500', result['feedback'])
+        self.confirm.click.assert_called_once()
+
+    def test_explicit_goods_rejection_requires_two_unchanged_channel_readbacks(self):
+        feedback = "第1行：标品ID[123]和抖音成色ID[95]未找到对应的goodsId"
+        products = [{"brand": "小米", "model": "18 Pro"}]
+        before = {"model": {"items": [{"product_id": "old"}]}}
+        changed = {"model": {"items": [{"product_id": "old"}, {"product_id": "new"}]}}
+        with patch("integrations.gaia_browser.submit.snapshot_channel_products",
+                   side_effect=[before, before, before]) as snapshot:
+            result = self.run_submission(feedback=feedback, expected_products=products)
+        self.assertTrue(result["rejection_no_new_products_verified"])
+        self.assertEqual(3, snapshot.call_count)
+        with patch("integrations.gaia_browser.submit.snapshot_channel_products",
+                   side_effect=[before, changed]):
+            result = self.run_submission(feedback=feedback, expected_products=products)
+        self.assertFalse(result["rejection_no_new_products_verified"])
+        self.assertIn("部分创建", result["rejection_reconcile_error"])
 
     def test_cancel_during_attachment_poll_never_records_intent_or_clicks(self):
         with self.assertRaisesRegex(RuntimeError, '运营停止'):

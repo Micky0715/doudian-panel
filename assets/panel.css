@@ -851,7 +851,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(33
 #gaiaView .gaia-quick-start h3{font-size:18px;margin-bottom:6px}
 #gaiaView .gaia-quick-start .card-intro{font-size:13px;margin:0;color:var(--text-sec)}
 #gaiaView .gaia-basic-fields{display:grid;grid-template-columns:2fr 1fr 1fr;gap:18px;margin-top:22px}
-#gaiaView .gaia-quick-start .gaia-basic-fields{grid-template-columns:1.2fr .6fr 1.6fr .65fr}
+#gaiaView .gaia-quick-start .gaia-basic-fields{grid-template-columns:1.1fr .55fr 1.4fr 1.4fr}
 #gaiaView .gaia-basic-fields .field{min-width:0}
 #gaiaView .gaia-basic-fields .field-label{font-size:13px}
 #gaiaView .gaia-basic-fields small{font-size:12px;font-weight:400;color:var(--text-dim);margin-left:8px}
